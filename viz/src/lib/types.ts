@@ -1,3 +1,30 @@
+export interface PriceForecast {
+  point_forecast: number;
+  current_price: number;
+  intervals: Record<string, { low: number; high: number }>;
+  quantiles: Record<string, number>;
+  samples_summary: {
+    mean: number;
+    std: number;
+    n: number;
+  };
+}
+
+export interface BacktestPrediction {
+  year: number;
+  month: number;
+  date: string;
+  predicted_prob: number;
+  predicted_price: number;
+  actual_price: number;
+  current_price: number;
+  actual_up: boolean;
+  correct: boolean;
+  error: number;
+  in_90_interval: boolean;
+  in_50_interval: boolean;
+}
+
 export interface ForecastData {
   generated_at: string;
   latest_price: number;
@@ -7,10 +34,12 @@ export interface ForecastData {
     probability: number;
     components: Record<string, number>;
   };
+  price_forecast: PriceForecast;
   model_info: {
-    n_obs: number;
-    n_commodities: number;
-    coefficients: Record<string, number>;
+    type: string;
+    n_quantile_models: number;
+    n_samples: number;
+    feature_importances: Record<string, number>;
   };
   kalshi: {
     ticker: string;
@@ -22,13 +51,12 @@ export interface ForecastData {
   };
   backtest: {
     accuracy: number;
+    direction_accuracy: number;
+    mape: number;
+    coverage_90: number;
+    coverage_50: number;
     brier_score: number;
-    predictions: Array<{
-      year: number;
-      predicted_prob: number;
-      actual_up: boolean;
-      correct: boolean;
-    }>;
+    predictions: BacktestPrediction[];
   };
   price_history: Array<{ date: string; price: number }>;
   all_prices: Array<{ date: string; price: number }>;

@@ -1,251 +1,170 @@
 """Probability estimation model for BLS egg price direction.
 
-Uses Bayesian logistic regression trained on multiple BLS food commodity
+Uses LightGBM quantile regression trained on multiple BLS food commodity
 price series to predict whether egg prices will increase.
 """
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
-from egg_price_forecast.bayesian_model import (
-    FEATURE_NAMES,
-    build_training_data,
-    decompose_contributions,
-    fit_bayesian_logistic,
-    predict_probability,
-)
-from egg_price_forecast.data import (
-    COMMODITY_SERIES,
-    fetch_all_commodities,
-    fetch_bls_series,
-    fetch_cpi_expectations,
-)
-from egg_price_forecast.features import (
-    decline_streak,
-    monthly_seasonal_rate,
-    recent_momentum,
-)
 
-
-def _next_february(prices: pd.Series) -> str:
-    """Determine the next February target month from the price series.
-
-    Returns format "YYYY-MM" for the February following the latest data point.
-    """
-    last_date = prices.index.max()
-    if last_date.month >= 2:
-        target_year = last_date.year + 1
-    else:
-        target_year = last_date.year
-    return f"{target_year}-02"
-
-
-def _compute_egg_features(
-    prices: pd.Series,
-    target_month: str,
-    cpi_expectations: pd.Series | None = None,
-) -> dict:
-    """Compute feature dict for egg prediction at target_month."""
-    month = int(target_month.split("-")[1])
-    target_ts = pd.Timestamp(target_month + "-01")
-
-    seasonal = monthly_seasonal_rate(prices, month)
-    streak = decline_streak(prices, target_month)
-    momentum = recent_momentum(prices, target_month, window=3)
-
-    cpi_val = 0.0
-    if cpi_expectations is not None and len(cpi_expectations) > 0:
-        cpi_before = cpi_expectations[cpi_expectations.index < target_ts]
-        if len(cpi_before) > 0:
-            cpi_val = float(cpi_before.iloc[-1])
-
-    return {
-        "seasonal_up_rate": seasonal,
-        "decline_streak": float(streak),
-        "recent_momentum": momentum,
-        "cpi_expectation": cpi_val,
-        "is_eggs": 1.0,
-    }
-
-
-def estimate_probability(
-    prices: pd.Series, wholesale: float | None = None
-) -> dict:
-    """Estimate probability that egg prices increase in February.
-
-    Trains a Bayesian logistic regression on multiple BLS food commodity
-    series and predicts the egg-specific probability.
+def estimate_probability(prices: pd.Series) -> dict:
+    """Estimate probability of egg price increase using simulation-based forecasting.
 
     Args:
         prices: BLS egg prices with DatetimeIndex (monthly).
-        wholesale: Optional current wholesale price per dozen (unused in
-            Bayesian model, kept for API compatibility).
 
     Returns:
-        Dict with 'probability' and 'components'.
+        Dict with probability, point_forecast, intervals, components,
+        model_info, quantiles, and samples_summary.
     """
-    target_month = _next_february(prices)
+    from .forecaster import run_forecast
 
-    # Fetch training data
-    commodities = fetch_all_commodities()
-    # Ensure eggs are in the training data using the passed-in prices
-    commodities["eggs"] = prices
+    # Get current price from latest observation
+    current_price = float(prices.iloc[-1])
 
-    try:
-        cpi_expectations = fetch_cpi_expectations()
-    except Exception:
-        cpi_expectations = None
-
-    # Build training data and fit model
-    training_data = build_training_data(commodities, cpi_expectations)
-    fitted = fit_bayesian_logistic(training_data)
-
-    # Compute egg-specific features for the target month
-    features = _compute_egg_features(prices, target_month, cpi_expectations)
-
-    # Predict
-    probability = predict_probability(fitted, features)
-
-    # Clamp to [0.05, 0.95]
-    probability = float(np.clip(probability, 0.05, 0.95))
-
-    # Decompose contributions
-    components = decompose_contributions(fitted, features)
+    # Run the quantile forecast
+    result = run_forecast(current_price=current_price)
 
     return {
-        "probability": probability,
-        "components": components,
+        "probability": result.p_up,
+        "point_forecast": result.point_forecast,
+        "intervals": {
+            str(k): {"low": float(v[0]), "high": float(v[1])}
+            for k, v in result.intervals.items()
+        },
+        "components": {
+            # Top 8 feature importances, normalized to sum to contributions
+            k: float(v)
+            for k, v in sorted(
+                result.feature_importances.items(),
+                key=lambda x: abs(x[1]),
+                reverse=True,
+            )[:8]
+        },
         "model_info": {
-            "n_obs": fitted["n_obs"],
-            "n_commodities": fitted["n_commodities"],
-            "coefficients": {
-                name: float(c)
-                for name, c in zip(
-                    fitted["feature_names"], fitted["coefficients"]
-                )
+            "type": "lightgbm_quantile",
+            "n_quantile_models": 7,
+            "n_samples": len(result.samples),
+            "feature_importances": {
+                k: float(v) for k, v in result.feature_importances.items()
             },
+        },
+        "quantiles": {str(k): float(v) for k, v in result.quantiles.items()},
+        "samples_summary": {
+            "mean": float(result.samples.mean()),
+            "std": float(result.samples.std()),
+            "n": len(result.samples),
         },
     }
 
 
 def backtest(prices: pd.Series, start_year: int = 2010) -> dict:
-    """Backtest the Bayesian model on historical price changes.
+    """Expanding-window backtest of the quantile forecast model.
 
-    For each month from start_year onward where we have both the target
-    month and preceding month data, uses only prior data to train and
-    checks if the model's prediction matched reality.
+    Evaluates January predictions (forecasting February) to match the
+    Kalshi use case. At each January from start_year onward, trains on
+    all prior data and predicts the following month's price.
 
     Args:
         prices: BLS egg prices with DatetimeIndex (monthly).
         start_year: First year to include in backtest.
 
     Returns:
-        Dict with 'predictions' list, 'accuracy', and 'brier_score'.
+        Dict with predictions list, direction_accuracy, mape,
+        coverage_90, coverage_50, brier_score, and accuracy.
     """
-    predictions = []
-
-    # Find all years where we have February data
-    years_with_feb = sorted(
-        set(prices.index[prices.index.month == 2].year)
+    from .data import fetch_all_commodities, fetch_cpi_expectations
+    from .forecaster import (
+        _get_feature_columns,
+        build_forecast_features,
+        predict_quantiles,
+        sample_from_quantiles,
+        train_quantile_models,
     )
 
-    # Fetch other commodities once for efficiency
-    all_commodities = fetch_all_commodities()
+    commodities = fetch_all_commodities()
+    cpi = fetch_cpi_expectations()
 
-    try:
-        cpi_expectations = fetch_cpi_expectations()
-    except Exception:
-        cpi_expectations = None
+    full_df = build_forecast_features(commodities, cpi)
 
-    for year in years_with_feb:
-        if year < start_year:
+    # Evaluate only January egg rows (predicting February)
+    egg_df = full_df[full_df["commodity"] == "eggs"].copy()
+    egg_df = egg_df.sort_values("date")
+    jan_eggs = egg_df[
+        (egg_df["date"].dt.month == 1) &
+        (egg_df["date"].dt.year >= start_year) &
+        egg_df["target"].notna()
+    ]
+
+    predictions = []
+    feature_cols = _get_feature_columns(full_df)
+
+    for _, row in jan_eggs.iterrows():
+        # Train on all data before this date (all commodities)
+        train_df = full_df[full_df["date"] < row["date"]].dropna(subset=["target"])
+        if len(train_df) < 100:
             continue
 
-        # Use data only up to January of that year
-        cutoff = pd.Timestamp(year=year, month=1, day=31)
-        historical_eggs = prices[prices.index <= cutoff]
+        models = train_quantile_models(train_df)
+        features_row = row[feature_cols].to_frame().T
+        q_preds = predict_quantiles(models, features_row)
+        samples = sample_from_quantiles(q_preds)
 
-        if len(historical_eggs) < 12:
-            continue
-
-        # Filter all commodities to pre-cutoff data
-        historical_commodities = {}
-        for name, series in all_commodities.items():
-            hist = series[series.index <= cutoff]
-            if len(hist) >= 12:
-                historical_commodities[name] = hist
-        historical_commodities["eggs"] = historical_eggs
-
-        # Filter CPI expectations
-        historical_cpi = None
-        if cpi_expectations is not None:
-            historical_cpi = cpi_expectations[
-                cpi_expectations.index <= cutoff
-            ]
-            if len(historical_cpi) == 0:
-                historical_cpi = None
-
-        # Build training data and fit on pre-cutoff data only
-        training_data = build_training_data(
-            historical_commodities, historical_cpi
-        )
-
-        if len(training_data) < 50:
-            continue
-
-        fitted = fit_bayesian_logistic(training_data)
-
-        # Compute features for February of this year
-        target_month = f"{year}-02"
-        features = _compute_egg_features(
-            historical_eggs, target_month, historical_cpi
-        )
-
-        predicted_prob = predict_probability(fitted, features)
-        predicted_prob = float(np.clip(predicted_prob, 0.05, 0.95))
-
-        # Get actual: did price go up in February vs January?
-        jan_mask = (prices.index.year == year) & (prices.index.month == 1)
-        feb_mask = (prices.index.year == year) & (prices.index.month == 2)
-
-        jan_prices = prices[jan_mask]
-        feb_prices = prices[feb_mask]
-
-        if len(jan_prices) == 0 or len(feb_prices) == 0:
-            continue
-
-        actual_up = bool(feb_prices.iloc[0] > jan_prices.iloc[0])
-        predicted_up = predicted_prob >= 0.5
-        correct = predicted_up == actual_up
+        actual_price = row["target"]
+        current_price = row["price_level"]
+        predicted_prob = float((samples > current_price).mean())
+        actual_up = actual_price > current_price
 
         predictions.append(
             {
-                "year": year,
-                "predicted_prob": predicted_prob,
-                "actual_up": actual_up,
-                "correct": correct,
+                "date": str(row["date"].date()),
+                "year": int(row["date"].year),
+                "month": int(row["date"].month),
+                "predicted_prob": round(predicted_prob, 3),
+                "predicted_price": round(float(q_preds[0.5]), 3),
+                "actual_price": round(float(actual_price), 3),
+                "current_price": round(float(current_price), 3),
+                "actual_up": bool(actual_up),
+                "correct": bool((predicted_prob > 0.5) == actual_up),
+                "error": round(float(abs(q_preds[0.5] - actual_price)), 3),
+                "in_90_interval": bool(
+                    q_preds[0.05] <= actual_price <= q_preds[0.95]
+                ),
+                "in_50_interval": bool(
+                    q_preds[0.25] <= actual_price <= q_preds[0.75]
+                ),
             }
         )
 
-    if len(predictions) == 0:
+    if not predictions:
         return {
             "predictions": [],
-            "accuracy": 0.0,
-            "brier_score": 1.0,
+            "direction_accuracy": 0,
+            "mape": 0,
+            "coverage_90": 0,
+            "coverage_50": 0,
+            "brier_score": 0,
+            "accuracy": 0,
         }
 
-    accuracy = sum(p["correct"] for p in predictions) / len(predictions)
-    brier_score = np.mean(
-        [
-            (p["predicted_prob"] - float(p["actual_up"])) ** 2
-            for p in predictions
-        ]
-    )
+    n = len(predictions)
+    direction_accuracy = sum(p["correct"] for p in predictions) / n
+    mape = sum(p["error"] / max(p["actual_price"], 0.01) for p in predictions) / n
+    coverage_90 = sum(p["in_90_interval"] for p in predictions) / n
+    coverage_50 = sum(p["in_50_interval"] for p in predictions) / n
+    brier_score = sum(
+        (p["predicted_prob"] - (1.0 if p["actual_up"] else 0.0)) ** 2
+        for p in predictions
+    ) / n
 
     return {
         "predictions": predictions,
-        "accuracy": float(accuracy),
-        "brier_score": float(brier_score),
+        "direction_accuracy": round(direction_accuracy, 3),
+        "mape": round(mape, 3),
+        "coverage_90": round(coverage_90, 3),
+        "coverage_50": round(coverage_50, 3),
+        "brier_score": round(brier_score, 3),
+        "accuracy": round(direction_accuracy, 3),
     }

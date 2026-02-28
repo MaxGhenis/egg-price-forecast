@@ -1,5 +1,6 @@
 "use client";
 
+import type { PriceForecast } from "@/lib/types";
 import {
   Area,
   AreaChart,
@@ -14,17 +15,58 @@ import {
 interface PriceChartProps {
   data: Array<{ date: string; price: number }>;
   latestPrice: number;
+  priceForecast: PriceForecast;
 }
 
-export function PriceChart({ data, latestPrice }: PriceChartProps) {
-  // Format dates for display
+export function PriceChart({ data, latestPrice, priceForecast }: PriceChartProps) {
+  // Build chart data with forecast extension
   const chartData = data.map((d) => ({
-    ...d,
+    date: d.date,
     label: new Date(d.date).toLocaleDateString("en-US", {
       year: "2-digit",
       month: "short",
     }),
+    price: d.price,
+    // These will be undefined for historical points
+    forecastPrice: undefined as number | undefined,
+    interval90Low: undefined as number | undefined,
+    interval90High: undefined as number | undefined,
+    interval50Low: undefined as number | undefined,
+    interval50High: undefined as number | undefined,
   }));
+
+  // Add forecast point extending one month into the future
+  const lastDate = new Date(data[data.length - 1].date);
+  const forecastDate = new Date(lastDate);
+  forecastDate.setMonth(forecastDate.getMonth() + 1);
+  const forecastLabel = forecastDate.toLocaleDateString("en-US", {
+    year: "2-digit",
+    month: "short",
+  });
+
+  const i90 = priceForecast.intervals["90"];
+  const i50 = priceForecast.intervals["50"];
+
+  // Bridge: the last historical point also starts the forecast bands
+  if (chartData.length > 0) {
+    const last = chartData[chartData.length - 1];
+    last.forecastPrice = last.price;
+    last.interval90Low = last.price;
+    last.interval90High = last.price;
+    last.interval50Low = last.price;
+    last.interval50High = last.price;
+  }
+
+  chartData.push({
+    date: forecastDate.toISOString().slice(0, 10),
+    label: forecastLabel,
+    price: undefined as unknown as number,
+    forecastPrice: priceForecast.point_forecast,
+    interval90Low: i90.low,
+    interval90High: i90.high,
+    interval50Low: i50.low,
+    interval50High: i50.high,
+  });
 
   return (
     <div className="space-y-3">
@@ -35,12 +77,20 @@ export function PriceChart({ data, latestPrice }: PriceChartProps) {
         >
           BLS egg price — per dozen
         </h3>
-        <span
-          className="text-lg font-light text-[var(--color-yolk)]"
-          style={{ fontFamily: "var(--font-data)" }}
-        >
-          ${latestPrice.toFixed(2)}
-        </span>
+        <div className="flex items-baseline gap-3">
+          <span
+            className="text-xs text-[var(--color-terminal-muted)]"
+            style={{ fontFamily: "var(--font-data)" }}
+          >
+            forecast: ${priceForecast.point_forecast.toFixed(2)}
+          </span>
+          <span
+            className="text-lg font-light text-[var(--color-yolk)]"
+            style={{ fontFamily: "var(--font-data)" }}
+          >
+            ${latestPrice.toFixed(2)}
+          </span>
+        </div>
       </div>
 
       <div className="h-[300px] w-full">
@@ -84,7 +134,18 @@ export function PriceChart({ data, latestPrice }: PriceChartProps) {
                 fontFamily: "var(--font-data)",
                 color: "var(--color-terminal-text)",
               }}
-              formatter={(v: number) => [`$${v.toFixed(3)}`, "Price"]}
+              formatter={(v: number, name: string) => {
+                if (v == null) return [null, null];
+                const labels: Record<string, string> = {
+                  price: "Price",
+                  forecastPrice: "Forecast",
+                  interval90High: "90% high",
+                  interval90Low: "90% low",
+                  interval50High: "50% high",
+                  interval50Low: "50% low",
+                };
+                return [`$${v.toFixed(3)}`, labels[name] || name];
+              }}
               labelFormatter={(label: string) => label}
             />
             <ReferenceLine
@@ -93,6 +154,61 @@ export function PriceChart({ data, latestPrice }: PriceChartProps) {
               strokeDasharray="4 4"
               strokeOpacity={0.5}
             />
+
+            {/* 90% prediction interval (light band) */}
+            <Area
+              type="monotone"
+              dataKey="interval90High"
+              stroke="none"
+              fill="rgba(52, 211, 153, 0.08)"
+              dot={false}
+              activeDot={false}
+              connectNulls={false}
+            />
+            <Area
+              type="monotone"
+              dataKey="interval90Low"
+              stroke="none"
+              fill="var(--color-terminal-bg)"
+              dot={false}
+              activeDot={false}
+              connectNulls={false}
+            />
+
+            {/* 50% prediction interval (medium band) */}
+            <Area
+              type="monotone"
+              dataKey="interval50High"
+              stroke="none"
+              fill="rgba(52, 211, 153, 0.15)"
+              dot={false}
+              activeDot={false}
+              connectNulls={false}
+            />
+            <Area
+              type="monotone"
+              dataKey="interval50Low"
+              stroke="none"
+              fill="var(--color-terminal-bg)"
+              dot={false}
+              activeDot={false}
+              connectNulls={false}
+            />
+
+            {/* Forecast line (dashed) */}
+            <Area
+              type="monotone"
+              dataKey="forecastPrice"
+              stroke="var(--color-up)"
+              strokeWidth={1.5}
+              strokeDasharray="6 3"
+              fill="none"
+              dot={{ r: 4, fill: "var(--color-up)", stroke: "var(--color-terminal-bg)", strokeWidth: 2 }}
+              activeDot={{ r: 5, fill: "var(--color-up)", stroke: "var(--color-terminal-bg)", strokeWidth: 2 }}
+              connectNulls={false}
+            />
+
+            {/* Historical price line */}
             <Area
               type="monotone"
               dataKey="price"
@@ -106,9 +222,26 @@ export function PriceChart({ data, latestPrice }: PriceChartProps) {
                 stroke: "var(--color-terminal-bg)",
                 strokeWidth: 2,
               }}
+              connectNulls={false}
             />
           </AreaChart>
         </ResponsiveContainer>
+      </div>
+
+      {/* Legend for forecast bands */}
+      <div className="flex items-center gap-4 text-[10px] text-[var(--color-terminal-muted)]" style={{ fontFamily: "var(--font-data)" }}>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2 w-4 rounded-sm" style={{ backgroundColor: "rgba(52, 211, 153, 0.15)" }} />
+          50% interval
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2 w-4 rounded-sm" style={{ backgroundColor: "rgba(52, 211, 153, 0.08)" }} />
+          90% interval
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-0.5 w-4 border-t border-dashed border-[var(--color-up)]" />
+          point forecast
+        </span>
       </div>
     </div>
   );

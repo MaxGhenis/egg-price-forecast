@@ -1,22 +1,28 @@
 "use client";
 
 interface ModelExplainerProps {
-  declineStreak: number;
-  seasonalRate: number;
-  recentMomentum: number;
-  modelInfo?: {
-    n_obs: number;
-    n_commodities: number;
-    coefficients: Record<string, number>;
+  modelInfo: {
+    type: string;
+    n_quantile_models: number;
+    n_samples: number;
+    feature_importances: Record<string, number>;
+  };
+  backtest: {
+    accuracy: number;
+    direction_accuracy: number;
+    mape: number;
+    coverage_90: number;
+    coverage_50: number;
+    brier_score: number;
   };
 }
 
 export function ModelExplainer({
-  declineStreak,
-  seasonalRate,
-  recentMomentum,
   modelInfo,
+  backtest,
 }: ModelExplainerProps) {
+  const dirAcc = backtest.direction_accuracy;
+
   return (
     <div className="space-y-6">
       <h3 className="text-lg font-semibold text-[var(--color-terminal-bright)]">
@@ -31,15 +37,14 @@ export function ModelExplainer({
             Approach
           </p>
           <p>
-            This is a <strong>Bayesian logistic regression</strong> trained on
-            month-over-month price direction changes across{" "}
-            <strong>{modelInfo?.n_commodities ?? 15} BLS food commodity</strong> series
-            (eggs, beef, chicken, milk, bread, flour, and more). By pooling data
-            across commodities and all calendar months, the model trains on{" "}
-            <strong>{modelInfo?.n_obs?.toLocaleString() ?? "~6,000"} observations</strong>{" "}
-            rather than just ~46 egg-only Februaries. Coefficients are estimated via
-            MAP (maximum a posteriori) with mildly regularizing normal priors, and
-            an egg-specific intercept captures egg-specific dynamics.
+            This is a <strong>LightGBM multi-quantile regression</strong> trained on
+            month-over-month price data across{" "}
+            <strong>15 BLS food commodity</strong> series
+            (eggs, beef, chicken, milk, bread, flour, rice, and more). Rather than
+            predicting binary direction, the model forecasts <strong>actual price values</strong>{" "}
+            at {modelInfo.n_quantile_models} quantile levels (5th, 10th, 25th, 50th, 75th, 90th, 95th), then derives
+            P(price increase) from the simulated price distribution. This preserves magnitude
+            information and provides prediction intervals.
           </p>
         </div>
 
@@ -67,99 +72,95 @@ export function ModelExplainer({
         <div>
           <p className="mb-3 text-xs font-medium uppercase tracking-wider text-[var(--color-terminal-muted)]"
              style={{ fontFamily: "var(--font-data)" }}>
-            Model features
+            Features
           </p>
           <p className="mb-3">
-            Five features are computed per commodity per month. At prediction time,
-            egg-specific values are used:
+            For each commodity and month, the model computes features capturing
+            price dynamics at multiple timescales:
           </p>
-
-          <div className="space-y-3">
-            {/* 1. Seasonal rate */}
-            <div className="rounded border-l-2 border-[var(--color-yolk)] bg-[var(--color-terminal-surface)] p-3">
-              <p className="text-sm font-medium text-[var(--color-terminal-bright)]">
-                1. Seasonal up rate
-                <span className="ml-2 text-xs text-[var(--color-yolk)]" style={{ fontFamily: "var(--font-data)" }}>
-                  = {(seasonalRate * 100).toFixed(1)}%
-                </span>
-              </p>
-              <p className="mt-1 text-xs text-[var(--color-terminal-muted)]">
-                Historical fraction of times this calendar month saw a price
-                increase vs the preceding month. Captures pure seasonal patterns.
-              </p>
-            </div>
-
-            {/* 2. Decline streak */}
-            <div className="rounded border-l-2 border-[var(--color-up)] bg-[var(--color-terminal-surface)] p-3">
-              <p className="text-sm font-medium text-[var(--color-terminal-bright)]">
-                2. Decline streak
-                <span className="ml-2 text-xs text-[var(--color-up)]" style={{ fontFamily: "var(--font-data)" }}>
-                  = {declineStreak} months
-                </span>
-              </p>
-              <p className="mt-1 text-xs text-[var(--color-terminal-muted)]">
-                Consecutive months of price declines leading into the target month.
-                Longer streaks suggest mean-reversion pressure.
-              </p>
-            </div>
-
-            {/* 3. Recent momentum */}
-            <div className="rounded border-l-2 border-[var(--color-up)] bg-[var(--color-terminal-surface)] p-3">
-              <p className="text-sm font-medium text-[var(--color-terminal-bright)]">
-                3. Recent momentum
-                <span className="ml-2 text-xs text-[var(--color-terminal-text)]" style={{ fontFamily: "var(--font-data)" }}>
-                  = {(recentMomentum * 100).toFixed(1)}%
-                </span>
-              </p>
-              <p className="mt-1 text-xs text-[var(--color-terminal-muted)]">
-                Average month-over-month percentage change over the prior 3 months.
-                Captures whether prices have been trending up or down recently.
-              </p>
-            </div>
-
-            {/* 4. CPI expectations */}
-            <div className="rounded border-l-2 border-[var(--color-terminal-muted)] bg-[var(--color-terminal-surface)] p-3">
-              <p className="text-sm font-medium text-[var(--color-terminal-bright)]">
-                4. CPI inflation expectations
-              </p>
-              <p className="mt-1 text-xs text-[var(--color-terminal-muted)]">
-                1-year expected inflation rate from the Cleveland Fed Nowcast (FRED:
-                EXPINF1YR). Higher inflation expectations may correlate with upward
-                food price pressure.
-              </p>
-            </div>
-
-            {/* 5. Egg-specific */}
-            <div className="rounded border-l-2 border-[var(--color-terminal-muted)] bg-[var(--color-terminal-surface)] p-3">
-              <p className="text-sm font-medium text-[var(--color-terminal-bright)]">
-                5. Egg-specific intercept
-              </p>
-              <p className="mt-1 text-xs text-[var(--color-terminal-muted)]">
-                A binary indicator that allows the model to learn egg-specific
-                dynamics (e.g., supply shocks from HPAI outbreaks) separate from
-                the general food commodity baseline.
-              </p>
-            </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <FeatureItem
+              color="var(--color-yolk)"
+              label="Price lags (1-6, 12)"
+              description="Recent price history and same-month-last-year for seasonal comparison"
+            />
+            <FeatureItem
+              color="var(--color-yolk)"
+              label="Momentum (1m, 3m, 12m)"
+              description="Percentage changes over multiple windows capture trend and acceleration"
+            />
+            <FeatureItem
+              color="var(--color-up)"
+              label="Seasonal encoding"
+              description="Sine/cosine month encoding for smooth cyclical patterns"
+            />
+            <FeatureItem
+              color="var(--color-up)"
+              label="CPI expectations"
+              description="1-year inflation expectations from Cleveland Fed Nowcast"
+            />
+            <FeatureItem
+              color="var(--color-terminal-muted)"
+              label="Cross-commodity momentum"
+              description="Average price momentum across other food commodities"
+            />
+            <FeatureItem
+              color="var(--color-terminal-muted)"
+              label="Egg indicator + price level"
+              description="Egg-specific dynamics and absolute price scale"
+            />
           </div>
         </div>
 
-        {/* Combination */}
+        {/* How P(up) is derived */}
         <div className="rounded-lg border border-[var(--color-terminal-border)] bg-[var(--color-terminal-surface)] p-4">
           <p className="mb-1 text-xs font-medium uppercase tracking-wider text-[var(--color-yolk)]"
              style={{ fontFamily: "var(--font-data)" }}>
-            How it combines
+            From price forecast to P(up)
           </p>
           <p>
-            Features are combined via logistic regression: each feature is multiplied
-            by a learned coefficient, summed with an intercept, and passed through
-            the logistic sigmoid to produce a probability. The output is a single
-            probability — no confidence intervals, since a probability already
-            encodes the model&apos;s uncertainty about the outcome.
+            {modelInfo.n_quantile_models} separate LightGBM models predict the 5th through 95th percentile
+            of next month&apos;s price. A skew-normal distribution is fit to these
+            quantile predictions, then {modelInfo.n_samples.toLocaleString()} price
+            scenarios are sampled. <strong>P(up)</strong> is simply the fraction
+            of simulated prices that exceed the current price. This approach captures
+            both the expected direction and magnitude of price changes, and naturally
+            produces prediction intervals.
           </p>
-          <p className="my-2 rounded bg-[var(--color-terminal-bg)] px-3 py-2 text-xs text-[var(--color-yolk)]"
+        </div>
+
+        {/* Backtest performance */}
+        <div className="rounded-lg border border-[var(--color-terminal-border)] bg-[var(--color-terminal-surface)] p-4">
+          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-[var(--color-yolk)]"
              style={{ fontFamily: "var(--font-data)" }}>
-            P(up) = sigmoid(intercept + &beta;&#8321; &middot; seasonal + &beta;&#8322; &middot; streak + &beta;&#8323; &middot; momentum + &beta;&#8324; &middot; cpi + &beta;&#8325; &middot; is_eggs)
+            Backtest accuracy
           </p>
+          <p className="mb-3">
+            Expanding-window backtest starting from 2010 — at each month, the model
+            trains only on prior data to simulate real-time forecasting:
+          </p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <MetricBox
+              label="Direction"
+              value={`${(dirAcc * 100).toFixed(0)}%`}
+              description="Correct up/down calls"
+            />
+            <MetricBox
+              label="MAPE"
+              value={`${(backtest.mape * 100).toFixed(1)}%`}
+              description="Mean absolute % error"
+            />
+            <MetricBox
+              label="90% coverage"
+              value={`${(backtest.coverage_90 * 100).toFixed(0)}%`}
+              description="Actuals in 90% interval"
+            />
+            <MetricBox
+              label="Brier"
+              value={backtest.brier_score.toFixed(3)}
+              description="Probability calibration"
+            />
+          </div>
         </div>
 
         {/* Limitations */}
@@ -169,15 +170,38 @@ export function ModelExplainer({
             Limitations
           </p>
           <p>
-            The model treats price direction as binary (up vs not up), discarding
-            magnitude information. Training on pooled commodities assumes some
-            shared dynamics across food prices, which may not always hold. The
-            model does not account for supply shocks, trade policy, or input
-            costs beyond what&apos;s captured by CPI expectations. Use the edge
-            estimate directionally, not as a precise fair value.
+            The model pools data across food commodities, assuming partially shared
+            price dynamics. While this increases training data, commodity-specific
+            shocks (HPAI outbreaks, trade policy) may not be well-captured by
+            historical patterns alone. Quantile crossing is corrected post-hoc
+            but the distribution fit assumes a skew-normal shape. Use predictions
+            directionally, not as precise fair values.
           </p>
         </div>
       </div>
+    </div>
+  );
+}
+
+function FeatureItem({ color, label, description }: { color: string; label: string; description: string }) {
+  return (
+    <div className="rounded border-l-2 bg-[var(--color-terminal-surface)] p-2.5" style={{ borderColor: color }}>
+      <p className="text-xs font-medium text-[var(--color-terminal-bright)]">{label}</p>
+      <p className="mt-0.5 text-[10px] text-[var(--color-terminal-muted)]">{description}</p>
+    </div>
+  );
+}
+
+function MetricBox({ label, value, description }: { label: string; value: string; description: string }) {
+  return (
+    <div className="rounded border border-[var(--color-terminal-border)] p-2 text-center">
+      <p className="text-[10px] uppercase text-[var(--color-terminal-muted)]" style={{ fontFamily: "var(--font-data)" }}>
+        {label}
+      </p>
+      <p className="text-lg font-light text-[var(--color-yolk)]" style={{ fontFamily: "var(--font-data)" }}>
+        {value}
+      </p>
+      <p className="text-[9px] text-[var(--color-terminal-muted)]">{description}</p>
     </div>
   );
 }

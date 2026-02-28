@@ -13,6 +13,9 @@ interface DashboardProps {
 }
 
 export function Dashboard({ data }: DashboardProps) {
+  const pf = data.price_forecast;
+  const bt = data.backtest;
+
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
       {/* Header */}
@@ -51,13 +54,78 @@ export function Dashboard({ data }: DashboardProps) {
 
       {/* Main grid */}
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* Left column: Gauge + Components */}
+        {/* Left column: Gauge + Forecast card + Components */}
         <div className="space-y-6">
           {/* Probability gauge */}
           <div className="rounded-xl border border-[var(--color-terminal-border)] bg-[var(--color-terminal-surface)] p-6">
             <ProbabilityGauge
               probability={data.forecast.probability}
             />
+          </div>
+
+          {/* Price forecast card */}
+          <div className="rounded-xl border border-[var(--color-terminal-border)] bg-[var(--color-terminal-surface)] p-5">
+            <h3
+              className="mb-3 text-xs font-medium uppercase tracking-[0.2em] text-[var(--color-terminal-muted)]"
+              style={{ fontFamily: "var(--font-data)" }}
+            >
+              Price forecast
+            </h3>
+            <div className="space-y-3">
+              {/* Point forecast */}
+              <div className="flex items-baseline justify-between">
+                <span className="text-sm text-[var(--color-terminal-text)]">Predicted price</span>
+                <span
+                  className="text-xl font-light text-[var(--color-up)]"
+                  style={{ fontFamily: "var(--font-data)" }}
+                >
+                  ${pf.point_forecast.toFixed(2)}
+                </span>
+              </div>
+
+              {/* Current price */}
+              <div className="flex items-baseline justify-between">
+                <span className="text-sm text-[var(--color-terminal-text)]">Current price</span>
+                <span
+                  className="text-sm text-[var(--color-terminal-muted)]"
+                  style={{ fontFamily: "var(--font-data)" }}
+                >
+                  ${pf.current_price.toFixed(2)}
+                </span>
+              </div>
+
+              {/* Intervals */}
+              <div className="border-t border-[var(--color-terminal-border)] pt-2">
+                <div className="flex items-baseline justify-between text-xs">
+                  <span className="text-[var(--color-terminal-muted)]">50% interval</span>
+                  <span style={{ fontFamily: "var(--font-data)", color: "var(--color-terminal-text)" }}>
+                    ${pf.intervals["50"].low.toFixed(2)} – ${pf.intervals["50"].high.toFixed(2)}
+                  </span>
+                </div>
+                <div className="mt-1 flex items-baseline justify-between text-xs">
+                  <span className="text-[var(--color-terminal-muted)]">90% interval</span>
+                  <span style={{ fontFamily: "var(--font-data)", color: "var(--color-terminal-text)" }}>
+                    ${pf.intervals["90"].low.toFixed(2)} – ${pf.intervals["90"].high.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Change direction */}
+              <div className="border-t border-[var(--color-terminal-border)] pt-2">
+                <div className="flex items-baseline justify-between text-xs">
+                  <span className="text-[var(--color-terminal-muted)]">Expected change</span>
+                  <span
+                    style={{
+                      fontFamily: "var(--font-data)",
+                      color: pf.point_forecast > pf.current_price ? "var(--color-up)" : "var(--color-down)",
+                    }}
+                  >
+                    {pf.point_forecast > pf.current_price ? "+" : ""}
+                    {((pf.point_forecast - pf.current_price) / pf.current_price * 100).toFixed(1)}%
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Component breakdown */}
@@ -75,6 +143,7 @@ export function Dashboard({ data }: DashboardProps) {
             <PriceChart
               data={data.price_history}
               latestPrice={data.latest_price}
+              priceForecast={data.price_forecast}
             />
           </div>
 
@@ -94,10 +163,8 @@ export function Dashboard({ data }: DashboardProps) {
       {/* Model explanation — full width below */}
       <div className="mt-8 rounded-xl border border-[var(--color-terminal-border)] bg-[var(--color-terminal-surface)] p-6 lg:p-8">
         <ModelExplainer
-          declineStreak={data.decline_streak}
-          seasonalRate={data.seasonal_rate}
-          recentMomentum={data.recent_momentum}
           modelInfo={data.model_info}
+          backtest={bt}
         />
       </div>
 
@@ -107,8 +174,11 @@ export function Dashboard({ data }: DashboardProps) {
           className="text-[10px] text-[var(--color-terminal-muted)]"
           style={{ fontFamily: "var(--font-data)" }}
         >
-          Not financial advice. Bayesian logistic regression trained on {data.model_info?.n_commodities ?? "multiple"} food
-          commodities — backtest accuracy ~{(data.backtest.accuracy * 100).toFixed(0)}%. BLS Average Price series via FRED.
+          Not financial advice. LightGBM quantile regression ({data.model_info.n_quantile_models} quantile models) trained on 15 food
+          commodities — backtest direction accuracy ~{(bt.direction_accuracy * 100).toFixed(0)}%
+          , MAPE {(bt.mape * 100).toFixed(0)}%
+          , 90% coverage {(bt.coverage_90 * 100).toFixed(0)}%.
+          BLS Average Price series via FRED.
         </p>
       </footer>
     </div>

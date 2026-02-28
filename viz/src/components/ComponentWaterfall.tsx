@@ -6,46 +6,57 @@ interface ComponentWaterfallProps {
 }
 
 const LABELS: Record<string, { label: string; description: string }> = {
-  intercept: {
-    label: "Baseline",
-    description: "Model intercept (prior expectation)",
+  lag_1: {
+    label: "Last month price",
+    description: "Most recent monthly price (strongest signal)",
   },
-  seasonal: {
-    label: "Seasonal pattern",
-    description: "Historical rate of increase for this month",
+  lag_2: {
+    label: "2-month lag",
+    description: "Price two months ago",
   },
-  streak: {
-    label: "Decline streak",
-    description: "Consecutive months of decline before target",
+  lag_3: {
+    label: "3-month lag",
+    description: "Price three months ago",
   },
-  momentum: {
-    label: "Recent momentum",
-    description: "Average MoM change over prior 3 months",
+  lag_12: {
+    label: "Same month last year",
+    description: "Year-over-year seasonal comparison",
   },
-  cpi_signal: {
+  pct_change_1m: {
+    label: "1-month momentum",
+    description: "Month-over-month percentage change",
+  },
+  pct_change_3m: {
+    label: "3-month momentum",
+    description: "Percentage change over 3 months",
+  },
+  pct_change_12m: {
+    label: "12-month momentum",
+    description: "Year-over-year percentage change",
+  },
+  price_level: {
+    label: "Price level",
+    description: "Current absolute price (scale-dependent dynamics)",
+  },
+  month_sin: {
+    label: "Seasonal (sin)",
+    description: "Cyclic month encoding — sine component",
+  },
+  month_cos: {
+    label: "Seasonal (cos)",
+    description: "Cyclic month encoding — cosine component",
+  },
+  cpi_expectation: {
     label: "CPI expectations",
-    description: "1-year expected inflation rate",
+    description: "1-year inflation expectations from Cleveland Fed",
   },
-  egg_specific: {
+  cross_commodity_momentum: {
+    label: "Cross-commodity",
+    description: "Average momentum across other food commodities",
+  },
+  is_eggs: {
     label: "Egg-specific",
-    description: "Egg intercept adjustment vs other commodities",
-  },
-  // Legacy labels for backward compatibility
-  base_rate: {
-    label: "Seasonal base",
-    description: "Historical Feb increase rate",
-  },
-  streak_adj: {
-    label: "Streak rebound",
-    description: "Longer decline → higher rebound odds",
-  },
-  analog_boost: {
-    label: "HPAI analog",
-    description: "Similarity to 2023 recovery pattern",
-  },
-  wholesale_boost: {
-    label: "Wholesale signal",
-    description: "Wholesale-retail gap pressure",
+    description: "Egg-specific dynamics (supply shocks, HPAI, etc.)",
   },
 };
 
@@ -62,7 +73,6 @@ export function ComponentWaterfall({
 }: ComponentWaterfallProps) {
   const entries = Object.entries(components) as [string, number][];
   let cumulative = 0;
-  // For logit-space contributions, use absolute sum for bar scaling
   const absSum = entries.reduce((s, [, v]) => s + Math.abs(v), 0) || 1;
 
   return (
@@ -71,12 +81,11 @@ export function ComponentWaterfall({
         className="mb-4 text-xs font-medium uppercase tracking-[0.2em] text-[var(--color-terminal-muted)]"
         style={{ fontFamily: "var(--font-data)" }}
       >
-        Component breakdown
+        Feature importance
       </h3>
 
       {entries.map(([key, value]) => {
         const meta = LABELS[key] || fallbackLabel(key);
-        const isFirst = cumulative === 0 && key === entries[0][0];
         const isInactive = Math.abs(value) < 0.001;
         cumulative += value;
         const isPositive = value >= 0;
@@ -149,7 +158,7 @@ export function ComponentWaterfall({
       {/* Total */}
       <div className="mt-3 flex items-baseline justify-between border-t border-[var(--color-terminal-border)] pt-3">
         <span className="text-sm font-semibold text-[var(--color-terminal-bright)]">
-          Total
+          P(up)
         </span>
         <span
           className="text-lg font-medium text-[var(--color-yolk)]"

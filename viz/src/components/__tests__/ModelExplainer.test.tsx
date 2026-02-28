@@ -3,81 +3,51 @@ import { describe, expect, it } from "vitest";
 import { ModelExplainer } from "../ModelExplainer";
 
 const mockModelInfo = {
-  n_obs: 6200,
-  n_commodities: 15,
-  coefficients: {
-    intercept: -0.3,
-    seasonal_up_rate: 1.2,
-    decline_streak: 0.5,
-    recent_momentum: 0.8,
-    cpi_expectation: 0.3,
-    is_eggs: -0.1,
+  type: "lightgbm_quantile",
+  n_quantile_models: 7,
+  n_samples: 1000,
+  feature_importances: {
+    lag_1: 0.25,
+    lag_12: 0.15,
+    pct_change_1m: 0.12,
+    month_sin: 0.10,
+    cpi_expectation: 0.08,
   },
+};
+
+const mockBacktest = {
+  accuracy: 0.5,
+  direction_accuracy: 0.5,
+  mape: 0.074,
+  coverage_90: 0.808,
+  coverage_50: 0.269,
+  brier_score: 0.325,
 };
 
 describe("ModelExplainer", () => {
   it("renders the heading", () => {
-    render(
-      <ModelExplainer
-        declineStreak={9}
-        seasonalRate={0.3478}
-        recentMomentum={-0.05}
-        modelInfo={mockModelInfo}
-      />
-    );
+    render(<ModelExplainer modelInfo={mockModelInfo} backtest={mockBacktest} />);
     expect(screen.getByText(/how the model works/i)).toBeInTheDocument();
   });
 
   it("describes the training data", () => {
-    render(
-      <ModelExplainer
-        declineStreak={9}
-        seasonalRate={0.3478}
-        recentMomentum={-0.05}
-        modelInfo={mockModelInfo}
-      />
-    );
+    render(<ModelExplainer modelInfo={mockModelInfo} backtest={mockBacktest} />);
     expect(screen.getByText(/BLS Average Price/i)).toBeInTheDocument();
-    expect(screen.getByText(/15 food commodities/i)).toBeInTheDocument();
   });
 
-  it("explains the model features", () => {
-    render(
-      <ModelExplainer
-        declineStreak={9}
-        seasonalRate={0.3478}
-        recentMomentum={-0.05}
-        modelInfo={mockModelInfo}
-      />
-    );
-    expect(screen.getByText(/1\. Seasonal up rate/i)).toBeInTheDocument();
-    expect(screen.getByText(/2\. Decline streak/i)).toBeInTheDocument();
-    expect(screen.getByText(/3\. Recent momentum/i)).toBeInTheDocument();
-    expect(screen.getByText(/4\. CPI inflation expectations/i)).toBeInTheDocument();
-    expect(screen.getByText(/5\. Egg-specific intercept/i)).toBeInTheDocument();
+  it("explains the LightGBM approach", () => {
+    render(<ModelExplainer modelInfo={mockModelInfo} backtest={mockBacktest} />);
+    expect(screen.getByText(/LightGBM multi-quantile regression/i)).toBeInTheDocument();
   });
 
-  it("shows the current streak value", () => {
-    render(
-      <ModelExplainer
-        declineStreak={9}
-        seasonalRate={0.3478}
-        recentMomentum={-0.05}
-        modelInfo={mockModelInfo}
-      />
-    );
-    expect(screen.getByText(/= 9 months/)).toBeInTheDocument();
+  it("describes how P(up) is derived", () => {
+    render(<ModelExplainer modelInfo={mockModelInfo} backtest={mockBacktest} />);
+    expect(screen.getByText(/skew-normal distribution/i)).toBeInTheDocument();
   });
 
-  it("describes the Bayesian approach", () => {
-    render(
-      <ModelExplainer
-        declineStreak={9}
-        seasonalRate={0.3478}
-        recentMomentum={-0.05}
-        modelInfo={mockModelInfo}
-      />
-    );
-    expect(screen.getByText(/Bayesian logistic regression/i)).toBeInTheDocument();
+  it("shows backtest metrics", () => {
+    render(<ModelExplainer modelInfo={mockModelInfo} backtest={mockBacktest} />);
+    expect(screen.getByText(/50%/)).toBeInTheDocument();
+    expect(screen.getByText(/7\.4%/)).toBeInTheDocument();
   });
 });

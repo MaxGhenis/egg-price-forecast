@@ -1,21 +1,22 @@
 "use client";
 
+import type { BacktestPrediction } from "@/lib/types";
+
 interface BacktestTableProps {
   backtest: {
     accuracy: number;
+    direction_accuracy: number;
+    mape: number;
+    coverage_90: number;
+    coverage_50: number;
     brier_score: number;
-    predictions: Array<{
-      year: number;
-      predicted_prob: number;
-      actual_up: boolean;
-      correct: boolean;
-    }>;
+    predictions: BacktestPrediction[];
   };
 }
 
 export function BacktestTable({ backtest }: BacktestTableProps) {
-  // Show last 15 years
   const recent = backtest.predictions.slice(-15);
+  const dirAcc = backtest.direction_accuracy;
 
   return (
     <div className="space-y-4">
@@ -29,12 +30,12 @@ export function BacktestTable({ backtest }: BacktestTableProps) {
       {/* Summary stats */}
       <div className="grid grid-cols-2 gap-3">
         <div className="rounded-lg border border-[var(--color-terminal-border)] bg-[var(--color-terminal-surface)] p-3">
-          <p className="text-[10px] uppercase text-[var(--color-terminal-muted)]">Accuracy</p>
+          <p className="text-[10px] uppercase text-[var(--color-terminal-muted)]">Direction</p>
           <p
             className="text-2xl font-light text-[var(--color-yolk)]"
             style={{ fontFamily: "var(--font-data)" }}
           >
-            {(backtest.accuracy * 100).toFixed(1)}%
+            {(dirAcc * 100).toFixed(1)}%
           </p>
         </div>
         <div className="rounded-lg border border-[var(--color-terminal-border)] bg-[var(--color-terminal-surface)] p-3">
@@ -44,6 +45,24 @@ export function BacktestTable({ backtest }: BacktestTableProps) {
             style={{ fontFamily: "var(--font-data)" }}
           >
             {backtest.brier_score.toFixed(3)}
+          </p>
+        </div>
+        <div className="rounded-lg border border-[var(--color-terminal-border)] bg-[var(--color-terminal-surface)] p-3">
+          <p className="text-[10px] uppercase text-[var(--color-terminal-muted)]">MAPE</p>
+          <p
+            className="text-2xl font-light text-[var(--color-terminal-text)]"
+            style={{ fontFamily: "var(--font-data)" }}
+          >
+            {(backtest.mape * 100).toFixed(1)}%
+          </p>
+        </div>
+        <div className="rounded-lg border border-[var(--color-terminal-border)] bg-[var(--color-terminal-surface)] p-3">
+          <p className="text-[10px] uppercase text-[var(--color-terminal-muted)]">90% coverage</p>
+          <p
+            className="text-2xl font-light text-[var(--color-terminal-text)]"
+            style={{ fontFamily: "var(--font-data)" }}
+          >
+            {(backtest.coverage_90 * 100).toFixed(0)}%
           </p>
         </div>
       </div>
@@ -78,21 +97,21 @@ export function BacktestTable({ backtest }: BacktestTableProps) {
                 color: "var(--color-terminal-muted)",
               }}
             >
-              {p.actual_up ? "↑" : "↓"}
+              {p.actual_up ? "\u2191" : "\u2193"}
             </span>
 
             {/* Tooltip */}
             <div className="pointer-events-none absolute -top-14 left-1/2 z-10 hidden -translate-x-1/2 rounded border border-[var(--color-terminal-border)] bg-[var(--color-terminal-bg)] px-2 py-1 text-[10px] whitespace-nowrap group-hover:block"
                  style={{ fontFamily: "var(--font-data)" }}>
               <div>{p.year}: {(p.predicted_prob * 100).toFixed(0)}% pred</div>
-              <div>Actual: {p.actual_up ? "UP" : "DOWN"} {p.correct ? "✓" : "✗"}</div>
+              <div>Actual: {p.actual_up ? "UP" : "DOWN"} {p.correct ? "\u2713" : "\u2717"}</div>
             </div>
           </div>
         ))}
       </div>
 
       <p className="text-[10px] text-[var(--color-terminal-muted)]">
-        Each cell = one February. Green = correct prediction, red = wrong. Arrow shows actual direction.
+        Each cell = one prediction. Green = correct, red = wrong. Arrow shows actual direction.
       </p>
     </div>
   );

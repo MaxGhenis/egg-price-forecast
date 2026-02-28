@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from egg_price_forecast.data import fetch_bls_eggs, get_wholesale_prices
+from egg_price_forecast.data import fetch_bls_eggs
 from egg_price_forecast.features import (
     compute_mom_changes,
     decline_streak,
@@ -15,10 +15,11 @@ from egg_price_forecast.model import backtest, estimate_probability
 
 def export():
     prices = fetch_bls_eggs()
-    wholesale = get_wholesale_prices()
 
-    result = estimate_probability(prices, wholesale=wholesale)
+    result = estimate_probability(prices)
     bt = backtest(prices, start_year=2000)
+
+    latest_price = round(float(prices.iloc[-1]), 3)
 
     # Price history — last 10 years for the chart, full for context
     recent = prices[prices.index >= "2015-01-01"]
@@ -71,7 +72,7 @@ def export():
 
     data = {
         "generated_at": prices.index[-1].strftime("%Y-%m-%d"),
-        "latest_price": round(float(prices.iloc[-1]), 3),
+        "latest_price": latest_price,
         "latest_month": prices.index[-1].strftime("%Y-%m"),
         "total_observations": len(prices),
         "forecast": {
@@ -80,13 +81,21 @@ def export():
                 k: round(v, 4) for k, v in result["components"].items()
             },
         },
+        "price_forecast": {
+            "point_forecast": result["point_forecast"],
+            "current_price": latest_price,
+            "intervals": result["intervals"],
+            "quantiles": result["quantiles"],
+            "samples_summary": result["samples_summary"],
+        },
         "model_info": {
-            k: (
-                {kk: round(vv, 4) for kk, vv in v.items()}
-                if isinstance(v, dict)
-                else v
-            )
-            for k, v in result.get("model_info", {}).items()
+            "type": result["model_info"]["type"],
+            "n_quantile_models": result["model_info"]["n_quantile_models"],
+            "n_samples": result["model_info"]["n_samples"],
+            "feature_importances": {
+                k: round(v, 4)
+                for k, v in result["model_info"]["feature_importances"].items()
+            },
         },
         "kalshi": {
             "ticker": "KXEGGS-FEB26-0",
@@ -94,10 +103,18 @@ def export():
             "model_estimate": round(result["probability"], 4),
             "edge": round(edge, 4),
             "kelly_fraction": round(kelly, 4),
-            "recommendation": "BUY YES" if edge > 0.05 else ("BUY NO" if edge < -0.05 else "NO EDGE"),
+            "recommendation": (
+                "BUY YES"
+                if edge > 0.05
+                else ("BUY NO" if edge < -0.05 else "NO EDGE")
+            ),
         },
         "backtest": {
-            "accuracy": round(bt["accuracy"], 4),
+            "accuracy": round(bt["direction_accuracy"], 4),
+            "direction_accuracy": round(bt["direction_accuracy"], 4),
+            "mape": round(bt["mape"], 3),
+            "coverage_90": round(bt["coverage_90"], 3),
+            "coverage_50": round(bt["coverage_50"], 3),
             "brier_score": round(bt["brier_score"], 4),
             "predictions": bt["predictions"],
         },
@@ -115,6 +132,7 @@ def export():
     out.write_text(json.dumps(data, indent=2))
     print(f"Exported to {out}")
     print(f"  Probability: {result['probability']:.1%}")
+    print(f"  Point forecast: ${result['point_forecast']:.2f}")
     print(f"  Edge: {edge:+.1%}")
 
 

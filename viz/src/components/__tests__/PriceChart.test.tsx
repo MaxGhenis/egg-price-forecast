@@ -2,7 +2,6 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { PriceChart } from "../PriceChart";
 
-// Recharts uses ResponsiveContainer which needs dimensions
 vi.mock("recharts", async () => {
   const actual = await vi.importActual("recharts");
   return {
@@ -24,19 +23,42 @@ const mockPrices = [
   { date: "2026-01-01", price: 2.58 },
 ];
 
+const mockForecast = {
+  point_forecast: 2.70,
+  current_price: 2.58,
+  intervals: {
+    "90": { low: 2.45, high: 3.22 },
+    "50": { low: 2.57, high: 2.70 },
+  },
+  quantiles: { "0.5": 2.70 },
+  samples_summary: { mean: 2.71, std: 0.19, n: 1000 },
+};
+
 describe("PriceChart", () => {
   it("renders the chart title", () => {
-    render(<PriceChart data={mockPrices} latestPrice={2.58} />);
+    render(<PriceChart data={mockPrices} latestPrice={2.58} priceForecast={mockForecast} />);
     expect(screen.getByText(/egg price/i)).toBeInTheDocument();
   });
 
   it("shows the latest price", () => {
-    render(<PriceChart data={mockPrices} latestPrice={2.58} />);
+    render(<PriceChart data={mockPrices} latestPrice={2.58} priceForecast={mockForecast} />);
     expect(screen.getByText(/\$2\.58/)).toBeInTheDocument();
   });
 
   it("renders a container for the chart", () => {
-    render(<PriceChart data={mockPrices} latestPrice={2.58} />);
+    render(<PriceChart data={mockPrices} latestPrice={2.58} priceForecast={mockForecast} />);
     expect(screen.getByTestId("chart-container")).toBeInTheDocument();
+  });
+
+  it("shows forecast price in header", () => {
+    render(<PriceChart data={mockPrices} latestPrice={2.58} priceForecast={mockForecast} />);
+    expect(screen.getByText(/forecast.*\$2\.70/i)).toBeInTheDocument();
+  });
+
+  it("renders forecast legend", () => {
+    render(<PriceChart data={mockPrices} latestPrice={2.58} priceForecast={mockForecast} />);
+    expect(screen.getByText(/50% interval/)).toBeInTheDocument();
+    expect(screen.getByText(/90% interval/)).toBeInTheDocument();
+    expect(screen.getByText(/point forecast/)).toBeInTheDocument();
   });
 });

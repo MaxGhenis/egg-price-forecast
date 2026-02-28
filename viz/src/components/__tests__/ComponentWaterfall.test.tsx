@@ -3,41 +3,41 @@ import { describe, expect, it } from "vitest";
 import { ComponentWaterfall } from "../ComponentWaterfall";
 
 const mockComponents = {
-  intercept: -0.3,
-  seasonal: 0.52,
-  streak: 0.15,
-  momentum: -0.08,
-  cpi_signal: 0.03,
-  egg_specific: -0.05,
+  lag_1: 0.25,
+  lag_12: 0.15,
+  pct_change_1m: 0.12,
+  cpi_expectation: 0.08,
+  cross_commodity_momentum: -0.05,
+  is_eggs: -0.02,
 };
 
 describe("ComponentWaterfall", () => {
   it("renders all component labels", () => {
-    render(<ComponentWaterfall components={mockComponents} total={0.553} />);
-    expect(screen.getByText(/baseline/i)).toBeInTheDocument();
-    expect(screen.getByText(/seasonal pattern/i)).toBeInTheDocument();
-    expect(screen.getByText(/decline streak/i)).toBeInTheDocument();
-    expect(screen.getByText(/recent momentum/i)).toBeInTheDocument();
+    render(<ComponentWaterfall components={mockComponents} total={0.65} />);
+    expect(screen.getByText(/last month price/i)).toBeInTheDocument();
+    expect(screen.getByText(/same month last year/i)).toBeInTheDocument();
+    expect(screen.getByText(/1-month momentum/i)).toBeInTheDocument();
     expect(screen.getByText(/cpi expectations/i)).toBeInTheDocument();
-    expect(screen.getByText(/egg-specific/i)).toBeInTheDocument();
+    expect(screen.getByText(/cross-commodity/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/egg-specific/i).length).toBeGreaterThan(0);
   });
 
-  it("renders the total row", () => {
-    render(<ComponentWaterfall components={mockComponents} total={0.553} />);
-    expect(screen.getByText(/total/i)).toBeInTheDocument();
-    expect(screen.getByText("55.3%")).toBeInTheDocument();
+  it("renders the P(up) total row", () => {
+    render(<ComponentWaterfall components={mockComponents} total={0.65} />);
+    expect(screen.getByText("P(up)")).toBeInTheDocument();
+    expect(screen.getByText("65.0%")).toBeInTheDocument();
   });
 
   it("shows component values with sign", () => {
-    render(<ComponentWaterfall components={mockComponents} total={0.553} />);
-    expect(screen.getByText("+0.52")).toBeInTheDocument();
-    expect(screen.getByText("-0.08")).toBeInTheDocument();
+    render(<ComponentWaterfall components={mockComponents} total={0.65} />);
+    expect(screen.getByText("+0.25")).toBeInTheDocument();
+    expect(screen.getByText("-0.05")).toBeInTheDocument();
   });
 
   it("marks near-zero components as inactive", () => {
-    const withZero = { ...mockComponents, cpi_signal: 0.0 };
+    const withZero = { ...mockComponents, is_eggs: 0.0 };
     const { container } = render(
-      <ComponentWaterfall components={withZero} total={0.553} />
+      <ComponentWaterfall components={withZero} total={0.65} />
     );
     expect(container.querySelector("[data-inactive]")).toBeTruthy();
   });
