@@ -472,6 +472,140 @@ class TestCovariateInfluence:
 # ---------------------------------------------------------------------------
 
 
+class TestForecastSECalibration:
+    """Forecast SE should reflect actual model residuals, not just Kalman theory."""
+
+    def test_se_at_least_as_large_as_residual_std(self):
+        """Forecast SE must be >= std of in-sample one-step-ahead residuals.
+
+        When sigma2.irregular collapses to zero, the Kalman filter reports
+        artificially small SE. The residual std provides a hard floor.
+        """
+        target = _make_random_walk_seasonal(120)
+        config = SeriesConfig(
+            name="test", fred_id="T", display_name="T", unit="$",
+            seasonal_harmonics=2,
+        )
+        result = fit_bsts(target, None, config)
+        fc = forecast_with_draws(result, n_draws=500, horizon=1)
+
+        # Get in-sample residuals
+        residual_std = float(np.std(result.model.resid))
+
+        assert fc.model_diagnostics["forecast_se"] >= residual_std * 0.8, (
+            f"Forecast SE {fc.model_diagnostics['forecast_se']:.4f} is much less "
+            f"than residual std {residual_std:.4f}"
+        )
+
+    def test_se_includes_residual_std_in_diagnostics(self):
+        """Model diagnostics should report residual_std for transparency."""
+        target = _make_random_walk_seasonal(120)
+        config = SeriesConfig(
+            name="test", fred_id="T", display_name="T", unit="$",
+            seasonal_harmonics=2,
+        )
+        result = fit_bsts(target, None, config)
+        fc = forecast_with_draws(result, n_draws=100, horizon=1)
+        assert "residual_std" in fc.model_diagnostics
+
+    def test_level_gap_inflates_se(self):
+        """When the smoothed level is far from the last observation, SE should
+        be at least half the gap.
+
+        This catches the case where the Kalman smoother's level lags behind
+        a rapid decline, and the model's theoretical SE doesn't reflect the
+        true uncertainty about the underlying level.
+        """
+        target = _make_random_walk_seasonal(120)
+        config = SeriesConfig(
+            name="test", fred_id="T", display_name="T", unit="$",
+            seasonal_harmonics=2,
+        )
+        result = fit_bsts(target, None, config)
+        fc = forecast_with_draws(result, n_draws=500, horizon=1)
+
+        # Check that the level gap is reflected in the SE
+        level = float(result.component_estimates.get("level", [np.nan])[-1])
+        current = fc.current_price
+        gap = abs(level - current)
+
+        if gap > 0.01:  # Only test when there IS a gap
+            assert fc.model_diagnostics["forecast_se"] >= gap * 0.4, (
+                f"SE {fc.model_diagnostics['forecast_se']:.4f} should be >= "
+                f"40% of level gap {gap:.4f}"
+            )
+
+
+class TestTrendExtrapolation:
+    """Model should extrapolate a declining trend, not predict a bounce."""
+
+    def test_declining_series_does_not_predict_large_bounce(self):
+        """After 10+ months of decline, forecast should NOT be far above current.
+
+        A +19% bounce after a sustained decline is unreasonable. The model
+        should capture the downward slope and produce a forecast near or
+        below the current price.
+
+        Uses a spike that peaks in Feb-Mar (like real HPAI data) to trigger
+        the seasonal pattern bug where the model learns "Feb = high".
+        """
+        # Start Jan 2014 so the spike lands on Feb-Mar timing
+        n = 144  # 12 years
+        rng = np.random.default_rng(42)
+        idx = pd.date_range("2014-01-01", periods=n, freq="MS")
+
+        # Base: stable around 2.0 with mild seasonal
+        seasonal = 0.05 * np.sin(2 * np.pi * np.arange(n) / 12)
+        values = 2.0 + seasonal + rng.normal(0, 0.02, n)
+
+        # HPAI-like spike peaking in Feb-Mar 2025 (months 133-134)
+        # Ramp up from Sep 2024 (month 128)
+        values[128:135] = [3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 5.0]
+        # Decline from Apr 2025 to Jan 2026 (months 135-144)
+        values[135:] = np.linspace(4.0, 2.0, n - 135) + rng.normal(0, 0.02, n - 135)
+        target = pd.Series(values, index=idx)
+
+        config = SeriesConfig(
+            name="test", fred_id="T", display_name="T", unit="$",
+            seasonal_harmonics=2,
+        )
+        result = fit_bsts(target, None, config)
+        fc = forecast_with_draws(result, n_draws=2000, horizon=1)
+
+        current = fc.current_price
+        pct_change = (fc.point_forecast - current) / current
+
+        # After a sustained decline, the forecast should NOT jump up >10%
+        assert pct_change < 0.10, (
+            f"Forecast ${fc.point_forecast:.2f} is {pct_change:+.0%} vs "
+            f"current ${current:.2f} — too large a bounce after decline"
+        )
+
+    def test_p_up_not_extreme_during_decline(self):
+        """P(up) should not be >80% when the series has been declining."""
+        n = 144
+        rng = np.random.default_rng(42)
+        idx = pd.date_range("2014-01-01", periods=n, freq="MS")
+
+        seasonal = 0.05 * np.sin(2 * np.pi * np.arange(n) / 12)
+        values = 2.0 + seasonal + rng.normal(0, 0.02, n)
+        values[128:135] = [3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 5.0]
+        values[135:] = np.linspace(4.0, 2.0, n - 135) + rng.normal(0, 0.02, n - 135)
+        target = pd.Series(values, index=idx)
+
+        config = SeriesConfig(
+            name="test", fred_id="T", display_name="T", unit="$",
+            seasonal_harmonics=2,
+        )
+        result = fit_bsts(target, None, config)
+        fc = forecast_with_draws(result, n_draws=3000, horizon=1)
+
+        assert fc.p_up < 0.80, (
+            f"P(up) = {fc.p_up:.1%} during sustained decline — "
+            f"should be <80%"
+        )
+
+
 class TestCovariateScaling:
     """Covariates should be transformed to pct_change for proper scaling."""
 

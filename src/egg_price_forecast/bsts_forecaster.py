@@ -346,18 +346,56 @@ def forecast_with_draws(
         point_forecast = current_price
         forecast_se = float(np.std(result.target_series.diff().dropna())) or 0.1
 
-    # Ensure forecast_se is reasonable (at least as large as recent volatility)
+    # --- Calibrate SE using in-sample residuals ---
+    # The Kalman filter's forecast_se can be much too small when sigma2.irregular
+    # collapses to zero (model thinks it perfectly explains every observation).
+    # The one-step-ahead residual std provides a hard floor.
+    try:
+        resid = fitted.resid
+        residual_std = float(np.nanstd(resid))
+        if np.isnan(residual_std) or residual_std < 0.001:
+            residual_std = 0.05
+    except Exception:
+        residual_std = 0.05
+
     recent_vol = float(result.target_series.diff().dropna().tail(24).std())
     if np.isnan(recent_vol) or recent_vol < 0.01:
         recent_vol = 0.05
-    forecast_se = max(forecast_se, recent_vol * 0.5, 0.01)
+
+    # Replace NaN with 0 before taking max (NaN propagates through max())
+    if np.isnan(forecast_se):
+        forecast_se = 0.0
+
+    # SE floor: max of Kalman SE, residual std, and recent volatility
+    forecast_se = max(forecast_se, residual_std, recent_vol * 0.5, 0.01)
+
+    # Additional uncertainty from level-observation gap: when the smoothed
+    # level is far from the last observation, the model is struggling to
+    # track rapid moves, so forecast uncertainty should be higher.
+    try:
+        level_gap = abs(
+            float(result.component_estimates.get("level", [np.nan])[-1])
+            - current_price
+        )
+        if not np.isnan(level_gap):
+            # Add gap as additional SE (the model is uncertain by at least
+            # this amount about the true level)
+            forecast_se = max(forecast_se, level_gap * 0.5)
+    except (IndexError, TypeError):
+        pass
+
+    # Inflate when model didn't converge
+    try:
+        converged = bool(fitted.mle_retvals["converged"])
+    except Exception:
+        converged = False
+    convergence_penalty = 1.0 if converged else 1.5
 
     # --- Generate draws ---
-    # The Kalman filter's forecast_se captures state + observation uncertainty.
-    # Add a small parameter uncertainty inflation (~5-15% for ~500 obs).
+    # Add parameter uncertainty inflation (~5-15% for ~500 obs).
     n_obs = len(result.target_series)
-    param_inflation = 1.0 + max(0.5 / np.sqrt(n_obs), 0.02)  # ~1.05 for 500 obs
-    total_se = forecast_se * param_inflation
+    param_inflation = 1.0 + max(0.5 / np.sqrt(n_obs), 0.02)
+    total_se = forecast_se * param_inflation * convergence_penalty
 
     draws = np.random.normal(point_forecast, total_se, size=n_draws)
 
@@ -418,6 +456,7 @@ def forecast_with_draws(
     model_diagnostics["n_obs"] = len(result.target_series)
     model_diagnostics["n_params"] = len(mle_params)
     model_diagnostics["forecast_se"] = total_se
+    model_diagnostics["residual_std"] = residual_std
     try:
         model_diagnostics["converged"] = bool(fitted.mle_retvals["converged"])
     except Exception:
