@@ -1,16 +1,33 @@
 """CLI entrypoint: prints probability estimate and Kalshi edge."""
 
+import argparse
+
 from egg_price_forecast.data import fetch_bls_eggs
-from egg_price_forecast.model import estimate_probability
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Egg price forecast")
+    parser.add_argument(
+        "--model",
+        choices=["bsts", "lgbm"],
+        default="bsts",
+        help="Model type: bsts (structural time series) or lgbm (LightGBM quantile)",
+    )
+    args = parser.parse_args()
+
     print("Fetching BLS egg price data...")
     prices = fetch_bls_eggs()
     print(f"  Got {len(prices)} monthly observations, latest: {prices.index[-1].strftime('%Y-%m')} = ${prices.iloc[-1]:.3f}")
 
-    print("\nEstimating probability of Feb 2026 increase...")
-    result = estimate_probability(prices)
+    model_label = "BSTS structural" if args.model == "bsts" else "LightGBM quantile"
+    print(f"\nEstimating probability of Feb 2026 increase ({model_label})...")
+
+    if args.model == "bsts":
+        from egg_price_forecast.model import estimate_probability_bsts
+        result = estimate_probability_bsts(prices)
+    else:
+        from egg_price_forecast.model import estimate_probability
+        result = estimate_probability(prices)
 
     prob = result["probability"]
     point = result["point_forecast"]
@@ -22,9 +39,9 @@ def main():
     if "90" in intervals:
         i90 = intervals["90"]
         print(f"90% interval:         [${i90['low']:.2f}, ${i90['high']:.2f}]")
-    print(f"\nTop feature importances:")
+    print(f"\nTop components:")
     for name, value in result["components"].items():
-        print(f"  {name}: {value:.1f}")
+        print(f"  {name}: {value:.4f}")
 
     # Kalshi edge calculation
     market_yes_price = 0.31  # Current YES at 31c

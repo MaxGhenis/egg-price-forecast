@@ -60,6 +60,8 @@ export function Dashboard({ data }: DashboardProps) {
           <div className="rounded-xl border border-[var(--color-terminal-border)] bg-[var(--color-terminal-surface)] p-6">
             <ProbabilityGauge
               probability={data.forecast.probability}
+              rawProbability={data.forecast.raw_probability}
+              baseRate={data.forecast.calibration?.base_rate}
             />
           </div>
 
@@ -174,8 +176,11 @@ export function Dashboard({ data }: DashboardProps) {
           className="text-[10px] text-[var(--color-terminal-muted)]"
           style={{ fontFamily: "var(--font-data)" }}
         >
-          Not financial advice. LightGBM quantile regression ({data.model_info.n_quantile_models} quantile models) trained on 15 food
-          commodities — backtest direction accuracy ~{(bt.direction_accuracy * 100).toFixed(0)}%
+          Not financial advice.{" "}
+          {data.model_info.type === "bsts_ucm"
+            ? "Bayesian Structural Time Series (local level + seasonal + PPI distributed lags + AR(1))"
+            : `LightGBM quantile regression (${data.model_info.n_quantile_models} quantile models) trained on 15 food commodities`}
+          {" "}— backtest direction accuracy ~{(bt.direction_accuracy * 100).toFixed(0)}%
           , MAPE {(bt.mape * 100).toFixed(0)}%
           , 90% coverage {(bt.coverage_90 * 100).toFixed(0)}%.
           BLS Average Price series via FRED.

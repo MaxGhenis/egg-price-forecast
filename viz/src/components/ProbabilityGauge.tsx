@@ -2,9 +2,11 @@
 
 interface ProbabilityGaugeProps {
   probability: number;
+  rawProbability?: number;
+  baseRate?: number;
 }
 
-export function ProbabilityGauge({ probability }: ProbabilityGaugeProps) {
+export function ProbabilityGauge({ probability, rawProbability, baseRate }: ProbabilityGaugeProps) {
   const pct = (probability * 100).toFixed(1);
   const isBullish = probability >= 0.5;
   const signal = isBullish ? "bullish" : "bearish";
@@ -110,6 +112,16 @@ export function ProbabilityGauge({ probability }: ProbabilityGaugeProps) {
       >
         {pct}%
       </p>
+      {(rawProbability !== undefined || baseRate !== undefined) && (
+        <p
+          className="mt-1 text-[10px] text-[var(--color-terminal-muted)]"
+          style={{ fontFamily: "var(--font-data)" }}
+        >
+          {rawProbability !== undefined && `raw: ${(rawProbability * 100).toFixed(0)}%`}
+          {rawProbability !== undefined && baseRate !== undefined && " · "}
+          {baseRate !== undefined && `base rate: ${(baseRate * 100).toFixed(0)}%`}
+        </p>
+      )}
     </div>
   );
 }

@@ -32,6 +32,14 @@ export interface ForecastData {
   total_observations: number;
   forecast: {
     probability: number;
+    raw_probability?: number;
+    calibration?: {
+      raw_p_up: number;
+      calibrated_p_up: number;
+      base_rate: number;
+      model_weight: number;
+      brier_score: number;
+    };
     components: Record<string, number>;
   };
   price_forecast: PriceForecast;

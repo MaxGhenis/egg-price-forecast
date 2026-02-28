@@ -1,6 +1,9 @@
 """Export model data as JSON for the visualization frontend."""
 
+import argparse
 import json
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from egg_price_forecast.data import fetch_bls_eggs
@@ -13,11 +16,52 @@ from egg_price_forecast.features import (
 from egg_price_forecast.model import backtest, estimate_probability
 
 
-def export():
+def log_prediction(data: dict, log_dir: Path | None = None) -> Path:
+    """Append a prediction entry to the JSONL log.
+
+    Args:
+        data: Dict with prediction data (model_version, current_price, etc.).
+        log_dir: Directory for the log file. Defaults to ./predictions.
+
+    Returns:
+        Path to the log file.
+    """
+    if log_dir is None:
+        log_dir = Path(__file__).parent / "predictions"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "log.jsonl"
+
+    try:
+        git_commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        git_commit = "unknown"
+
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "git_commit": git_commit,
+        **data,
+    }
+
+    with open(log_file, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+    return log_file
+
+
+def export(model_type: str = "bsts"):
     prices = fetch_bls_eggs()
 
-    result = estimate_probability(prices)
-    bt = backtest(prices, start_year=2000)
+    if model_type == "bsts":
+        from egg_price_forecast.model import backtest_bsts, estimate_probability_bsts
+
+        bt = backtest_bsts(prices, start_year=2000)
+        result = estimate_probability_bsts(prices)
+    else:
+        bt = backtest(prices, start_year=2000)
+        result = estimate_probability(prices, brier_score=bt["brier_score"])
 
     latest_price = round(float(prices.iloc[-1]), 3)
 
@@ -77,6 +121,8 @@ def export():
         "total_observations": len(prices),
         "forecast": {
             "probability": round(result["probability"], 4),
+            "raw_probability": round(result.get("raw_probability", result["probability"]), 4),
+            "calibration": result.get("calibration", {}),
             "components": {
                 k: round(v, 4) for k, v in result["components"].items()
             },
@@ -130,11 +176,37 @@ def export():
     out = Path(__file__).parent / "viz" / "src" / "data" / "forecast.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(data, indent=2))
+    log_prediction({
+        "model_version": "bsts_ucm" if model_type == "bsts" else "lightgbm_quantile",
+        "current_price": latest_price,
+        "raw_p_up": round(result.get("raw_probability", result["probability"]), 4),
+        "calibrated_p_up": round(result["probability"], 4),
+        "base_rate": round(result.get("calibration", {}).get("base_rate", 0), 4),
+        "point_forecast": result["point_forecast"],
+        "intervals": result["intervals"],
+        "backtest": {
+            "direction_accuracy": bt["direction_accuracy"],
+            "mape": bt["mape"],
+            "coverage_90": bt["coverage_90"],
+            "brier_score": bt["brier_score"],
+        },
+    })
     print(f"Exported to {out}")
     print(f"  Probability: {result['probability']:.1%}")
     print(f"  Point forecast: ${result['point_forecast']:.2f}")
     print(f"  Edge: {edge:+.1%}")
+    if "raw_probability" in result:
+        print(f"  Raw P(up): {result['raw_probability']:.1%}")
+        print(f"  Calibrated P(up): {result['probability']:.1%}")
 
 
 if __name__ == "__main__":
-    export()
+    parser = argparse.ArgumentParser(description="Export forecast data as JSON")
+    parser.add_argument(
+        "--model",
+        choices=["bsts", "lgbm"],
+        default="bsts",
+        help="Model type: bsts (structural time series) or lgbm (LightGBM quantile)",
+    )
+    args = parser.parse_args()
+    export(model_type=args.model)

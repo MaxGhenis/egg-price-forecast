@@ -180,6 +180,52 @@ class TestEstimateProbability:
         assert isinstance(result["probability"], float)
         assert isinstance(result["point_forecast"], float)
 
+    def test_calibration_key_present(self, synthetic_prices, monkeypatch):
+        """Result dict contains calibration key with expected sub-keys."""
+        mock_result = _make_mock_forecast_result()
+
+        import egg_price_forecast.forecaster as forecaster_mod
+        monkeypatch.setattr(forecaster_mod, "run_forecast", lambda **kwargs: mock_result)
+
+        from egg_price_forecast.model import estimate_probability
+
+        result = estimate_probability(synthetic_prices)
+
+        assert "calibration" in result
+        calibration = result["calibration"]
+        for sub_key in ("raw_p_up", "calibrated_p_up", "base_rate", "model_weight"):
+            assert sub_key in calibration, f"calibration missing sub-key: {sub_key}"
+
+    def test_raw_probability_preserved(self, synthetic_prices, monkeypatch):
+        """Result contains raw_probability that matches the mock's p_up value."""
+        mock_result = _make_mock_forecast_result()
+
+        import egg_price_forecast.forecaster as forecaster_mod
+        monkeypatch.setattr(forecaster_mod, "run_forecast", lambda **kwargs: mock_result)
+
+        from egg_price_forecast.model import estimate_probability
+
+        result = estimate_probability(synthetic_prices)
+
+        assert "raw_probability" in result
+        assert result["raw_probability"] == pytest.approx(mock_result.p_up)
+
+    def test_brier_score_parameter_affects_output(self, synthetic_prices, monkeypatch):
+        """Different brier_score values produce different calibrated probabilities."""
+        import egg_price_forecast.forecaster as forecaster_mod
+
+        mock_result = _make_mock_forecast_result()
+        monkeypatch.setattr(forecaster_mod, "run_forecast", lambda **kwargs: mock_result)
+
+        from egg_price_forecast.model import estimate_probability
+
+        result_low = estimate_probability(synthetic_prices, brier_score=0.10)
+        result_high = estimate_probability(synthetic_prices, brier_score=0.49)
+
+        assert result_low["probability"] != result_high["probability"], (
+            "calibrated probability should differ when brier_score differs"
+        )
+
 
 class TestBacktest:
     """Tests for backtest function."""

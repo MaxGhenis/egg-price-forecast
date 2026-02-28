@@ -253,3 +253,51 @@ class TestForecastResult:
         assert 50 in result.intervals
         assert 0.50 in result.quantiles
         assert "lag_1" in result.feature_importances
+
+
+class TestBuildForecastFeaturesWithPPI:
+    """Tests for PPI-related behaviour in build_forecast_features."""
+
+    def _make_synthetic_ppi(
+        self,
+        n_months: int = 50,
+        start: str = "2019-01-01",
+    ) -> pd.Series:
+        """Generate synthetic monthly PPI series."""
+        rng = np.random.RandomState(77)
+        dates = pd.date_range(start=start, periods=n_months, freq="MS")
+        values = 150.0 + rng.normal(0, 5.0, n_months)
+        return pd.Series(values, index=dates, dtype=float)
+
+    def test_ppi_columns_present_when_provided(self):
+        """PPI columns appear when ppi_eggs is supplied."""
+        from egg_price_forecast.forecaster import build_forecast_features
+
+        commodities = _make_synthetic_commodities()
+        cpi = _make_synthetic_cpi()
+        ppi = self._make_synthetic_ppi()
+        result = build_forecast_features(commodities, cpi, ppi_eggs=ppi)
+
+        for col in ("ppi_eggs", "ppi_pct_change", "wholesale_retail_gap"):
+            assert col in result.columns, f"Missing PPI column: {col}"
+
+    def test_ppi_none_produces_nan_gracefully(self):
+        """PPI columns still exist but are NaN when ppi_eggs=None."""
+        from egg_price_forecast.forecaster import build_forecast_features
+
+        commodities = _make_synthetic_commodities()
+        cpi = _make_synthetic_cpi()
+        result = build_forecast_features(commodities, cpi, ppi_eggs=None)
+
+        for col in ("ppi_eggs", "ppi_pct_change", "wholesale_retail_gap"):
+            assert col in result.columns, f"Missing PPI column: {col}"
+            assert result[col].isna().all(), (
+                f"Expected all-NaN for {col} when ppi_eggs=None"
+            )
+
+    def test_feature_cols_includes_ppi(self):
+        """Module-level FEATURE_COLS list includes the three PPI feature names."""
+        from egg_price_forecast.forecaster import FEATURE_COLS
+
+        for col in ("ppi_eggs", "ppi_pct_change", "wholesale_retail_gap"):
+            assert col in FEATURE_COLS, f"FEATURE_COLS missing: {col}"

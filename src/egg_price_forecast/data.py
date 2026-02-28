@@ -40,6 +40,7 @@ COMMODITY_SERIES: dict[str, str] = {
 }
 
 _CPI_EXPECTATIONS_SERIES = "EXPINF1YR"
+PPI_EGGS_SERIES = "WPU0171"
 
 
 def _cache_path() -> Path:
@@ -118,6 +119,17 @@ def fetch_cpi_expectations() -> pd.Series:
         pd.Series with DatetimeIndex and float values (percentage points).
     """
     return fetch_bls_series(_CPI_EXPECTATIONS_SERIES)
+
+
+def fetch_ppi_eggs() -> pd.Series:
+    """Fetch PPI Chicken Eggs index (WPU0171) from FRED.
+
+    Monthly wholesale egg price index (1982=100), available from 1971.
+
+    Returns:
+        pd.Series with DatetimeIndex and float values.
+    """
+    return fetch_bls_series(PPI_EGGS_SERIES)
 
 
 def fetch_bls_eggs() -> pd.Series:

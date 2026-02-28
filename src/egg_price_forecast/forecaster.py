@@ -20,6 +20,7 @@ from egg_price_forecast.data import fetch_all_commodities, fetch_cpi_expectation
 def build_forecast_features(
     commodities: dict[str, pd.Series],
     cpi: pd.Series,
+    ppi_eggs: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Build feature matrix from multi-commodity price data and CPI expectations.
 
@@ -44,6 +45,11 @@ def build_forecast_features(
         series = series.sort_index()
         # Align CPI to commodity dates via forward-fill
         cpi_aligned = cpi.reindex(series.index, method="ffill")
+        # Align PPI eggs to commodity dates via forward-fill
+        if ppi_eggs is not None:
+            ppi_aligned = ppi_eggs.reindex(series.index, method="ffill")
+        else:
+            ppi_aligned = pd.Series(np.nan, index=series.index)
 
         for i in range(12, len(series) - 1):
             date = series.index[i]
@@ -101,6 +107,17 @@ def build_forecast_features(
                 "cross_commodity_momentum": cross_momentum,
                 "is_eggs": 1 if name == "eggs" else 0,
                 "price_level": current,
+                "ppi_eggs": ppi_aligned.iloc[i] if i < len(ppi_aligned) else np.nan,
+                "ppi_pct_change": (
+                    (ppi_aligned.iloc[i] - ppi_aligned.iloc[i - 1]) / ppi_aligned.iloc[i - 1]
+                    if (i >= 1 and i < len(ppi_aligned) and ppi_aligned.iloc[i - 1] != 0 and not pd.isna(ppi_aligned.iloc[i - 1]) and not pd.isna(ppi_aligned.iloc[i]))
+                    else np.nan
+                ),
+                "wholesale_retail_gap": (
+                    current / ppi_aligned.iloc[i]
+                    if (i < len(ppi_aligned) and ppi_aligned.iloc[i] != 0 and not pd.isna(ppi_aligned.iloc[i]))
+                    else np.nan
+                ),
                 "target": series.iloc[i + 1],
                 "commodity": name,
                 "date": date,
@@ -143,6 +160,9 @@ FEATURE_COLS: list[str] = [
     "cross_commodity_momentum",
     "is_eggs",
     "price_level",
+    "ppi_eggs",
+    "ppi_pct_change",
+    "wholesale_retail_gap",
 ]
 
 _NON_FEATURE_COLS = frozenset({"target", "commodity", "date"})
@@ -340,8 +360,14 @@ def run_forecast(current_price: float | None = None) -> ForecastResult:
         # Fallback: empty CPI series
         cpi = pd.Series(dtype=float)
 
+    try:
+        from egg_price_forecast.data import fetch_ppi_eggs
+        ppi_eggs = fetch_ppi_eggs()
+    except Exception:
+        ppi_eggs = None
+
     # Build features
-    df = build_forecast_features(commodities, cpi)
+    df = build_forecast_features(commodities, cpi, ppi_eggs=ppi_eggs)
 
     # Train models
     models = train_quantile_models(df)
