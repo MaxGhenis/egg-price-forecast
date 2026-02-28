@@ -11,10 +11,13 @@ from egg_price_forecast.bsts_forecaster import (
     BSTSResult,
     build_almon_basis,
     build_covariate_matrix,
+    build_full_exog,
+    build_intervention_columns,
+    build_month_dummies,
     fit_bsts,
     forecast_with_draws,
 )
-from egg_price_forecast.series_config import SeriesConfig
+from egg_price_forecast.series_config import InterventionConfig, SeriesConfig
 
 
 # ---------------------------------------------------------------------------
@@ -624,3 +627,287 @@ class TestCovariateScaling:
             f"Almon basis max = {valid.abs().max().max():.1f}, "
             f"expected < 10 with pct_change input"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests: Intervention column construction
+# ---------------------------------------------------------------------------
+
+
+class TestInterventionColumns:
+    """build_intervention_columns creates step + geometric decay regressors."""
+
+    def _make_interventions(self):
+        return (
+            InterventionConfig(onset_date="2016-01-01", decay=0.85, label="event_a"),
+            InterventionConfig(onset_date="2020-06-01", decay=0.90, label="event_b"),
+        )
+
+    def test_step_zero_before_onset(self):
+        """Step column is 0 before onset date."""
+        idx = _make_monthly_index(120, start="2014-01-01")
+        interventions = (
+            InterventionConfig(onset_date="2016-01-01", decay=0.85, label="ev"),
+        )
+        df = build_intervention_columns(idx, interventions)
+        # All dates before 2016-01-01 should have step=0
+        before = df.loc[idx < pd.Timestamp("2016-01-01"), "ev_step"]
+        assert (before == 0).all()
+
+    def test_step_one_after_onset(self):
+        """Step column is 1 at and after onset date."""
+        idx = _make_monthly_index(120, start="2014-01-01")
+        interventions = (
+            InterventionConfig(onset_date="2016-01-01", decay=0.85, label="ev"),
+        )
+        df = build_intervention_columns(idx, interventions)
+        after = df.loc[idx >= pd.Timestamp("2016-01-01"), "ev_step"]
+        assert (after == 1).all()
+
+    def test_decay_zero_before_onset(self):
+        """Decay column is 0 before onset date."""
+        idx = _make_monthly_index(120, start="2014-01-01")
+        interventions = (
+            InterventionConfig(onset_date="2016-01-01", decay=0.85, label="ev"),
+        )
+        df = build_intervention_columns(idx, interventions)
+        before = df.loc[idx < pd.Timestamp("2016-01-01"), "ev_decay"]
+        assert (before == 0).all()
+
+    def test_decay_geometric_pattern(self):
+        """Decay column follows decay^(months since onset)."""
+        idx = _make_monthly_index(60, start="2014-01-01")
+        interventions = (
+            InterventionConfig(onset_date="2015-01-01", decay=0.80, label="ev"),
+        )
+        df = build_intervention_columns(idx, interventions)
+        # At onset (2015-01-01), months_since=0 → decay^0 = 1.0
+        onset_val = df.loc[pd.Timestamp("2015-01-01"), "ev_decay"]
+        assert abs(onset_val - 1.0) < 1e-10
+        # 3 months later → 0.80^3 = 0.512
+        three_months = df.loc[pd.Timestamp("2015-04-01"), "ev_decay"]
+        assert abs(three_months - 0.80**3) < 1e-10
+
+    def test_multiple_interventions_independent_columns(self):
+        """Each intervention produces its own pair of step+decay columns."""
+        idx = _make_monthly_index(120, start="2014-01-01")
+        interventions = self._make_interventions()
+        df = build_intervention_columns(idx, interventions)
+        assert "event_a_step" in df.columns
+        assert "event_a_decay" in df.columns
+        assert "event_b_step" in df.columns
+        assert "event_b_decay" in df.columns
+        assert df.shape[1] == 4  # 2 interventions × 2 columns
+
+    def test_empty_interventions_gives_empty_dataframe(self):
+        """Empty interventions tuple → empty DataFrame."""
+        idx = _make_monthly_index(60)
+        df = build_intervention_columns(idx, ())
+        assert df.empty or df.shape[1] == 0
+        assert len(df) == len(idx)
+
+
+# ---------------------------------------------------------------------------
+# Tests: Month-of-year dummy construction
+# ---------------------------------------------------------------------------
+
+
+class TestMonthDummies:
+    """build_month_dummies creates 11 dummy columns (Jan=reference)."""
+
+    def test_eleven_columns(self):
+        """Output has 11 columns for months 2-12."""
+        idx = _make_monthly_index(24)
+        df = build_month_dummies(idx)
+        assert df.shape[1] == 11
+        assert list(df.columns) == [f"month_{m}" for m in range(2, 13)]
+
+    def test_january_all_zero(self):
+        """January rows have all zeros (reference category)."""
+        idx = _make_monthly_index(24, start="2020-01-01")
+        df = build_month_dummies(idx)
+        jan_rows = df.loc[idx.month == 1]
+        assert (jan_rows == 0).all().all()
+
+    def test_february_activates_month_2(self):
+        """February rows have month_2=1 and all others=0."""
+        idx = _make_monthly_index(24, start="2020-01-01")
+        df = build_month_dummies(idx)
+        feb_rows = df.loc[idx.month == 2]
+        assert (feb_rows["month_2"] == 1).all()
+        other_cols = [c for c in df.columns if c != "month_2"]
+        assert (feb_rows[other_cols] == 0).all().all()
+
+    def test_each_row_at_most_one_one(self):
+        """Each row has exactly one 1 (or all 0 for January)."""
+        idx = _make_monthly_index(36, start="2020-01-01")
+        df = build_month_dummies(idx)
+        row_sums = df.sum(axis=1)
+        # Jan rows sum to 0, all others sum to 1
+        for i, ts in enumerate(idx):
+            expected = 0 if ts.month == 1 else 1
+            assert row_sums.iloc[i] == expected, f"Row {i} ({ts}): sum={row_sums.iloc[i]}"
+
+    def test_correct_column_for_known_date(self):
+        """October date activates month_10."""
+        idx = pd.DatetimeIndex([pd.Timestamp("2023-10-01")])
+        df = build_month_dummies(idx)
+        assert df["month_10"].iloc[0] == 1
+        assert df.drop(columns=["month_10"]).iloc[0].sum() == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Full exog assembly
+# ---------------------------------------------------------------------------
+
+
+class TestFullExog:
+    """build_full_exog assembles PDL + intervention + month dummy columns."""
+
+    def _make_config_with_interventions(self):
+        return SeriesConfig(
+            name="test",
+            fred_id="T",
+            display_name="T",
+            unit="$",
+            covariates={},
+            interventions=(
+                InterventionConfig(onset_date="2016-01-01", decay=0.85, label="ev_a"),
+            ),
+            use_deterministic_seasonal=True,
+        )
+
+    def test_column_count_no_pdl(self):
+        """With no PDL covariates: 2*interventions + 11 month dummies."""
+        target = _make_random_walk_seasonal(60)
+        config = self._make_config_with_interventions()
+        full, pdl_only = build_full_exog(target, config)
+        # 1 intervention × 2 + 11 month dummies = 13
+        assert full.shape[1] == 13
+        assert pdl_only.empty or pdl_only.shape[1] == 0
+
+    def test_column_count_with_pdl(self):
+        """With PDL covariates: PDL cols + 2*interventions + 11."""
+        target = _make_random_walk_seasonal(120)
+        # Manually provide a pdl-like DataFrame
+        pdl = pd.DataFrame(
+            {"cov_z_0": np.ones(120), "cov_z_1": np.ones(120)},
+            index=target.index,
+        )
+        config = self._make_config_with_interventions()
+        full, pdl_only = build_full_exog(target, config, pdl_covariates=pdl)
+        # 2 PDL + 2 intervention + 11 month = 15
+        assert full.shape[1] == 15
+        assert pdl_only.shape[1] == 2
+
+    def test_pdl_only_subset_matches(self):
+        """pdl_only columns are a subset of full exog."""
+        target = _make_random_walk_seasonal(120)
+        pdl = pd.DataFrame(
+            {"cov_z_0": np.ones(120), "cov_z_1": np.ones(120)},
+            index=target.index,
+        )
+        config = self._make_config_with_interventions()
+        full, pdl_only = build_full_exog(target, config, pdl_covariates=pdl)
+        for col in pdl_only.columns:
+            assert col in full.columns
+
+    def test_index_matches_target(self):
+        """Output index matches target index."""
+        target = _make_random_walk_seasonal(60)
+        config = self._make_config_with_interventions()
+        full, _ = build_full_exog(target, config)
+        pd.testing.assert_index_equal(full.index, target.index)
+
+
+# ---------------------------------------------------------------------------
+# Tests: Deterministic seasonal model fit
+# ---------------------------------------------------------------------------
+
+
+class TestDeterministicSeasonalFit:
+    """Model with deterministic seasonal + interventions handles spikes correctly."""
+
+    def _make_spike_series(self):
+        """Synthetic series with a spike that declines — mimics HPAI."""
+        n = 144  # 12 years
+        rng = np.random.default_rng(42)
+        idx = pd.date_range("2014-01-01", periods=n, freq="MS")
+
+        # Base: stable around 2.0 with mild true seasonal
+        seasonal = 0.05 * np.sin(2 * np.pi * np.arange(n) / 12)
+        values = 2.0 + seasonal + rng.normal(0, 0.02, n)
+
+        # HPAI-like spike peaking in Feb-Mar 2025 (months 133-134)
+        values[128:135] = [3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 5.0]
+        # Decline from Apr 2025 to Jan 2026 (months 135-144)
+        values[135:] = np.linspace(4.0, 2.0, n - 135) + rng.normal(0, 0.02, n - 135)
+        return pd.Series(values, index=idx)
+
+    def test_intervention_absorbs_spike(self):
+        """With intervention regressor, forecast after spike dissipation is near
+        pre-spike level (not elevated by contaminated seasonal)."""
+        target = self._make_spike_series()
+        config = SeriesConfig(
+            name="test",
+            fred_id="T",
+            display_name="T",
+            unit="$",
+            covariates={},
+            seasonal_harmonics=0,
+            interventions=(
+                InterventionConfig(
+                    onset_date="2024-09-01", decay=0.90, label="spike"
+                ),
+            ),
+            use_deterministic_seasonal=True,
+        )
+        result = fit_bsts(target, None, config)
+        fc = forecast_with_draws(result, n_draws=3000, horizon=1)
+
+        current = fc.current_price
+        pct_change = (fc.point_forecast - current) / current
+
+        # After decline, forecast should NOT bounce up >10%
+        assert pct_change < 0.10, (
+            f"Forecast ${fc.point_forecast:.2f} is {pct_change:+.0%} vs "
+            f"current ${current:.2f} — intervention didn't absorb spike"
+        )
+
+    def test_p_up_reasonable_after_decline(self):
+        """P(up) should be <80% after sustained decline with interventions."""
+        target = self._make_spike_series()
+        config = SeriesConfig(
+            name="test",
+            fred_id="T",
+            display_name="T",
+            unit="$",
+            covariates={},
+            seasonal_harmonics=0,
+            interventions=(
+                InterventionConfig(
+                    onset_date="2024-09-01", decay=0.90, label="spike"
+                ),
+            ),
+            use_deterministic_seasonal=True,
+        )
+        result = fit_bsts(target, None, config)
+        fc = forecast_with_draws(result, n_draws=3000, horizon=1)
+
+        assert fc.p_up < 0.80, (
+            f"P(up) = {fc.p_up:.1%} during decline — should be <80%"
+        )
+
+    def test_pdl_covariates_stored_in_result(self):
+        """BSTSResult should store pdl_covariates separately."""
+        target = _make_random_walk_seasonal(120)
+        config = SeriesConfig(
+            name="test",
+            fred_id="T",
+            display_name="T",
+            unit="$",
+            covariates={},
+            use_deterministic_seasonal=True,
+        )
+        result = fit_bsts(target, None, config)
+        assert hasattr(result, "pdl_covariates")

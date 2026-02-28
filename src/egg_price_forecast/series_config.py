@@ -11,6 +11,21 @@ from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
+class InterventionConfig:
+    """Configuration for an intervention regressor (e.g. HPAI supply shock).
+
+    Attributes:
+        onset_date: ISO date string for the start of the intervention.
+        decay: Geometric decay rate per month (0 < decay < 1).
+        label: Short label used as column name prefix.
+    """
+
+    onset_date: str
+    decay: float
+    label: str
+
+
+@dataclass(frozen=True)
 class SeriesConfig:
     """Configuration for a single commodity price series.
 
@@ -24,6 +39,10 @@ class SeriesConfig:
         covariate_max_lag: Maximum lag months for Almon PDL (default 12).
         seasonal_harmonics: Number of trigonometric seasonal harmonics (default 2).
         forecast_horizon: Months ahead to forecast (default 1).
+        interventions: Tuple of InterventionConfig for structural breaks.
+        use_deterministic_seasonal: If True, use month-of-year dummies instead
+            of stochastic trig seasonal (prevents one-off events from being
+            learned as recurring seasonal patterns).
     """
 
     name: str
@@ -34,6 +53,8 @@ class SeriesConfig:
     covariate_max_lag: int = 12
     seasonal_harmonics: int = 2
     forecast_horizon: int = 1
+    interventions: tuple[InterventionConfig, ...] = ()
+    use_deterministic_seasonal: bool = False
 
 
 # PPI / wholesale series IDs used as covariates
@@ -61,6 +82,19 @@ SERIES_CONFIGS: dict[str, SeriesConfig] = {
             "ppi_eggs": _PPI_EGGS,
             "cpi_expectations": _CPI_EXPECTATIONS,
         },
+        interventions=(
+            InterventionConfig(
+                onset_date="2014-11-01",
+                decay=0.85,
+                label="hpai_2015",
+            ),
+            InterventionConfig(
+                onset_date="2024-01-01",
+                decay=0.90,
+                label="hpai_2024",
+            ),
+        ),
+        use_deterministic_seasonal=True,
     ),
     "ground_beef": SeriesConfig(
         name="ground_beef",

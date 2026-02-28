@@ -20,7 +20,11 @@ import pandas as pd
 from statsmodels.tsa.statespace.structural import UnobservedComponents
 
 from egg_price_forecast.data import fetch_bls_series
-from egg_price_forecast.series_config import SERIES_CONFIGS, SeriesConfig
+from egg_price_forecast.series_config import (
+    SERIES_CONFIGS,
+    InterventionConfig,
+    SeriesConfig,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +125,108 @@ def build_covariate_matrix(
 
 
 # ---------------------------------------------------------------------------
+# Intervention regressors + deterministic seasonality
+# ---------------------------------------------------------------------------
+
+
+def build_intervention_columns(
+    index: pd.DatetimeIndex,
+    interventions: tuple[InterventionConfig, ...],
+) -> pd.DataFrame:
+    """Build step + geometric decay columns for each intervention.
+
+    For each intervention with onset date T and decay rate d:
+      - {label}_step: 0 before T, 1 at and after T
+      - {label}_decay: 0 before T, d^(months_since_T) at and after T
+
+    Args:
+        index: DatetimeIndex for the output rows.
+        interventions: Tuple of InterventionConfig.
+
+    Returns:
+        DataFrame with 2 columns per intervention, indexed like input.
+        Empty DataFrame (with correct index) if no interventions.
+    """
+    if not interventions:
+        return pd.DataFrame(index=index)
+
+    cols: dict[str, np.ndarray] = {}
+    for iv in interventions:
+        onset = pd.Timestamp(iv.onset_date)
+        step = np.where(index >= onset, 1.0, 0.0)
+
+        # Months since onset (fractional months not needed — monthly data)
+        months_since = (
+            (index.year - onset.year) * 12 + (index.month - onset.month)
+        ).astype(float)
+        decay = np.where(index >= onset, iv.decay ** months_since, 0.0)
+
+        cols[f"{iv.label}_step"] = step
+        cols[f"{iv.label}_decay"] = decay
+
+    return pd.DataFrame(cols, index=index)
+
+
+def build_month_dummies(index: pd.DatetimeIndex) -> pd.DataFrame:
+    """Build 11 month-of-year dummy columns (January = reference).
+
+    Args:
+        index: DatetimeIndex for the output rows.
+
+    Returns:
+        DataFrame with columns month_2 .. month_12.
+    """
+    months = index.month
+    cols = {}
+    for m in range(2, 13):
+        cols[f"month_{m}"] = (months == m).astype(float)
+    return pd.DataFrame(cols, index=index)
+
+
+def build_full_exog(
+    target: pd.Series,
+    config: SeriesConfig,
+    pdl_covariates: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Assemble full exogenous matrix: PDL covariates + interventions + month dummies.
+
+    Args:
+        target: Target price series (used for index).
+        config: SeriesConfig with interventions and seasonal settings.
+        pdl_covariates: Pre-built PDL covariate DataFrame (or None).
+
+    Returns:
+        Tuple of (full_exog, pdl_only) where pdl_only is the PDL subset.
+    """
+    idx = target.index
+    parts: list[pd.DataFrame] = []
+
+    # PDL covariates (if any)
+    pdl_only = pd.DataFrame(index=idx)
+    if pdl_covariates is not None and not pdl_covariates.empty:
+        pdl_aligned = pdl_covariates.reindex(idx)
+        parts.append(pdl_aligned)
+        pdl_only = pdl_aligned
+
+    # Intervention columns
+    if config.interventions:
+        iv_df = build_intervention_columns(idx, config.interventions)
+        parts.append(iv_df)
+
+    # Month dummies (deterministic seasonal)
+    if config.use_deterministic_seasonal:
+        month_df = build_month_dummies(idx)
+        parts.append(month_df)
+
+    if parts:
+        full = pd.concat(parts, axis=1)
+    else:
+        full = pd.DataFrame(index=idx)
+
+    return full, pdl_only
+
+
+# ---------------------------------------------------------------------------
 # Dataclasses for results
 # ---------------------------------------------------------------------------
 
@@ -146,6 +252,7 @@ class BSTSResult:
     target_series: pd.Series
     exog: pd.DataFrame | None
     config: SeriesConfig
+    pdl_covariates: pd.DataFrame | None = None
 
 
 @dataclass
@@ -205,28 +312,51 @@ def fit_bsts(
     """
     target = target.sort_index().dropna()
 
-    # Prepare exog: drop rows with NaN in covariates
-    exog = None
-    if covariates is not None and not covariates.empty:
-        # Align indices
-        common_idx = target.index.intersection(covariates.index)
+    # --- Deterministic seasonal + intervention path ---
+    pdl_covariates_out = None
+    if config.use_deterministic_seasonal:
+        # Build PDL covariates from the raw covariates argument
+        pdl_cov = None
+        if covariates is not None and not covariates.empty:
+            pdl_cov = covariates
+
+        # Assemble full exog: PDL + interventions + month dummies
+        full_exog, pdl_only = build_full_exog(target, config, pdl_covariates=pdl_cov)
+
+        # Align and drop NaN rows
+        common_idx = target.index.intersection(full_exog.index)
         target = target.loc[common_idx]
-        covariates = covariates.loc[common_idx]
+        full_exog = full_exog.loc[common_idx]
 
-        # Drop rows where any covariate is NaN
-        valid_mask = covariates.notna().all(axis=1)
+        valid_mask = full_exog.notna().all(axis=1)
         target = target[valid_mask]
-        covariates = covariates[valid_mask]
+        full_exog = full_exog[valid_mask]
 
-        if not covariates.empty:
-            exog = covariates
+        exog = full_exog if not full_exog.empty else None
+        pdl_covariates_out = pdl_only.loc[target.index] if not pdl_only.empty else None
 
-    # Build the UCM model — use freq_seasonal for trigonometric seasonality
-    freq_seasonal_spec = (
-        [{"period": 12, "harmonics": config.seasonal_harmonics}]
-        if config.seasonal_harmonics > 0
-        else None
-    )
+        # No freq_seasonal — seasonality is captured by month dummies in exog
+        freq_seasonal_spec = None
+    else:
+        # --- Legacy stochastic seasonal path ---
+        exog = None
+        if covariates is not None and not covariates.empty:
+            common_idx = target.index.intersection(covariates.index)
+            target = target.loc[common_idx]
+            covariates = covariates.loc[common_idx]
+
+            valid_mask = covariates.notna().all(axis=1)
+            target = target[valid_mask]
+            covariates = covariates[valid_mask]
+
+            if not covariates.empty:
+                exog = covariates
+
+        freq_seasonal_spec = (
+            [{"period": 12, "harmonics": config.seasonal_harmonics}]
+            if config.seasonal_harmonics > 0
+            else None
+        )
 
     model = UnobservedComponents(
         target.values,
@@ -272,14 +402,11 @@ def fit_bsts(
     covariate_coefficients = {}
     if exog is not None:
         n_exog = exog.shape[1]
-        # Exog params are typically at the end of the param vector
         exog_names = list(exog.columns) if isinstance(exog, pd.DataFrame) else [
             f"exog_{i}" for i in range(n_exog)
         ]
         try:
-            # Get beta from the regression component
             for i, name in enumerate(exog_names):
-                # Iterate through param names to find beta coefficients
                 for j, pname in enumerate(results.param_names):
                     if f"beta.x{i+1}" in pname or (f"exog" in pname.lower() and str(i) in pname):
                         covariate_coefficients[name] = float(mle_params[j])
@@ -295,6 +422,7 @@ def fit_bsts(
         target_series=target,
         exog=exog,
         config=config,
+        pdl_covariates=pdl_covariates_out,
     )
 
 
@@ -333,8 +461,46 @@ def forecast_with_draws(
     try:
         exog_forecast = None
         if result.exog is not None and not result.exog.empty:
-            last_exog = result.exog.iloc[[-1]].values
-            exog_forecast = np.tile(last_exog, (horizon, 1))
+            if result.config.use_deterministic_seasonal:
+                # Build proper forecast exog with correct month dummies,
+                # extended interventions, and last-known PDL values
+                last_date = result.target_series.index[-1]
+                forecast_idx = pd.date_range(
+                    last_date + pd.DateOffset(months=1),
+                    periods=horizon,
+                    freq="MS",
+                )
+                forecast_parts: list[pd.DataFrame] = []
+
+                # PDL: repeat last known values
+                if result.pdl_covariates is not None and not result.pdl_covariates.empty:
+                    last_pdl = result.pdl_covariates.iloc[[-1]]
+                    pdl_forecast = pd.DataFrame(
+                        np.tile(last_pdl.values, (horizon, 1)),
+                        index=forecast_idx,
+                        columns=last_pdl.columns,
+                    )
+                    forecast_parts.append(pdl_forecast)
+
+                # Interventions: extend columns
+                if result.config.interventions:
+                    iv_forecast = build_intervention_columns(
+                        forecast_idx, result.config.interventions
+                    )
+                    forecast_parts.append(iv_forecast)
+
+                # Month dummies: correct month for forecast date
+                month_forecast = build_month_dummies(forecast_idx)
+                forecast_parts.append(month_forecast)
+
+                if forecast_parts:
+                    exog_forecast = pd.concat(forecast_parts, axis=1).values
+                else:
+                    exog_forecast = None
+            else:
+                # Legacy path: repeat last exog row
+                last_exog = result.exog.iloc[[-1]].values
+                exog_forecast = np.tile(last_exog, (horizon, 1))
 
         forecast_obj = fitted.get_forecast(steps=horizon, exog=exog_forecast)
         # predicted_mean may be ndarray or Series depending on statsmodels version
